@@ -6,4 +6,5 @@ router.post("/", UserController.createUser);
 router.post("/exists", UserController.checkUserExists);
 router.get("/vehicles/:userId", UserController.getVehiclesByUserId);
 
+
 module.exports = router;

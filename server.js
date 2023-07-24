@@ -8,6 +8,7 @@ const app = express();
 const port = 3000;
 
 const authRoutes = require("./routes/auth.routes");
+const rideRoutes = require("./routes/ride.routes");
 
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -18,6 +19,7 @@ app.use(passport.initialize());
 
 // Routes
 app.use("/auth", authRoutes);
+app.use("/ride", rideRoutes);
 
 app.listen(port, () => {
   console.log(`App running on port ${port}`);

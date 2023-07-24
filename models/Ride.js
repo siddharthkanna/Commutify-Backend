@@ -1,38 +1,83 @@
-const mongoose = require('mongoose');
+// models/Ride.js
+
+const mongoose = require("mongoose");
 
 const rideSchema = new mongoose.Schema({
-  driver: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+  driverId: {
+    type: String,
     required: true,
   },
-  passengers: [{
-    user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
+  passengerId: { type: String },
+  pickupLocation: [
+    {
+      latitude: {
+        type: Number,
+        required: true,
+      },
+      longitude: {
+        type: Number,
+        required: true,
+      },
+      placeName: {
+        type: String,
+        required: true,
+      },
     },
-    source: {
-      type: String,
-      required: true,
+  ],
+  destinationLocation: [
+    {
+      latitude: {
+        type: Number,
+        required: true,
+      },
+      longitude: {
+        type: Number,
+        required: true,
+      },
+      placeName: {
+        type: String,
+        required: true,
+      },
     },
-    destination: {
-      type: String,
-      required: true,
-    },
-  }],
-  availableSeats: {
+  ],
+  immediateMode: {
+    type: Boolean,
+    required: true,
+  },
+  scheduledMode: {
+    type: Boolean,
+    required: true,
+  },
+  selectedVehicle: {
+    type: String,
+    required: true,
+  },
+  selectedCapacity: {
     type: Number,
     required: true,
-    default: 0,
   },
-  departureTime: {
+  selectedDate: {
     type: Date,
     required: true,
   },
-  // Other ride properties...
+  selectedTime: {
+    type: String,
+    required: true,
+  },
+  price: {
+    type: Number,
+    required: true,
+  },
+  userRole: {
+    type: String,
+  },
+  rideType: {
+    type: String,
+    enum : ['booked', 'published'],
+    required: true
+  }
 });
 
-const Ride = mongoose.model('Ride', rideSchema);
+const Ride = mongoose.model("Ride", rideSchema);
 
 module.exports = Ride;
