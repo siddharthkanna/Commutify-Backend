@@ -4,7 +4,7 @@ const dotenv = require("dotenv");
 dotenv.config({path: "./vars/.env"});
 
 const uri = process.env.mongoURI;
-const dbName = process.env.dbName;
+const dbName = process.env.dbname;
 
 mongoose
   .connect(`${uri}/${dbName}`, {
