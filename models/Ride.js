@@ -3,6 +3,7 @@
 const mongoose = require("mongoose");
 
 const rideSchema = new mongoose.Schema({
+
   driverId: {
     type: String,
     required: true,
@@ -68,14 +69,12 @@ const rideSchema = new mongoose.Schema({
     type: Number,
     required: true,
   },
-  userRole: {
-    type: String,
-  },
+
   rideType: {
     type: String,
-    enum : ['booked', 'published'],
-    required: true
-  }
+    enum: ["booked", "published"],
+    required: true,
+  },
 });
 
 const Ride = mongoose.model("Ride", rideSchema);

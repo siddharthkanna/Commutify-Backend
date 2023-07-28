@@ -16,7 +16,6 @@ exports.publishRide = async (req, res) => {
       selectedDate,
       selectedTime,
       price,
-      userRole,
     } = req.body;
 
     // Create a new ride object
@@ -31,7 +30,7 @@ exports.publishRide = async (req, res) => {
       selectedDate,
       selectedTime,
       price,
-      userRole,
+
       rideType: "published",
     });
 
@@ -41,6 +40,33 @@ exports.publishRide = async (req, res) => {
     res.status(201).json({ message: "Ride published successfully" });
   } catch (err) {
     res.status(500).json({ err });
+  }
+};
+
+exports.bookRide = async (req, res) => {
+  try {
+    const { rideId, passengerId } = req.body;
+
+    // Find the ride by its ID
+    const ride = await Ride.findById(rideId);
+
+    if (!ride) {
+      return res.status(404).json({ message: "Ride not found" });
+    }
+
+    // Check if the ride is already booked
+    if (ride.passengerId) {
+      return res.status(400).json({ message: "Ride is already booked" });
+    }
+
+    // Update the ride with passenger details
+    ride.passengerId = passengerId;
+    ride.rideType = "booked"; // Update the rideType to "booked"
+    await ride.save();
+
+    res.json({ message: "Ride booked successfully" });
+  } catch (err) {
+    res.status(500).json({ message: "Internal server error" });
   }
 };
 
@@ -62,9 +88,10 @@ exports.fetchPublishedRides = async (req, res) => {
     // For example, if you need to extract the pickup location name, destination location name, etc.:
     const ridesData = publishedRides.map((ride) => {
       return {
+        rideId: ride._id,
         driverName: user.name,
-        pickupLocationName: ride.pickupLocation[0]?.placeName,
-        destinationLocationName: ride.destinationLocation[0]?.placeName,
+        pickupLocation: ride.pickupLocation,
+        destinationLocation: ride.destinationLocation,
         price: ride.price,
         selectedDate: ride.selectedDate,
         selectedTime: ride.selectedTime,
@@ -76,6 +103,6 @@ exports.fetchPublishedRides = async (req, res) => {
 
     res.json(ridesData);
   } catch (err) {
-    res.status(500).json({ message: "Internal server error" });
+    res.status(502).json({ err });
   }
 };
