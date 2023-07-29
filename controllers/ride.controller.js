@@ -90,8 +90,16 @@ exports.fetchPublishedRides = async (req, res) => {
       return {
         rideId: ride._id,
         driverName: user.name,
-        pickup: ride.pickupLocation[0]?.placeName,
-        destination: ride.destinationLocation[0]?.placeName,
+        pickupLocation: {
+          latitude: ride.pickupLocation[0].latitude,
+          longitude: ride.pickupLocation[0].longitude,
+          placeName: ride.pickupLocation[0].placeName,
+        },
+        destinationLocation: {
+          latitude: ride.destinationLocation[0].latitude,
+          longitude: ride.destinationLocation[0].longitude,
+          placeName: ride.destinationLocation[0].placeName,
+        },
         price: ride.price,
         selectedDate: ride.selectedDate,
         selectedTime: ride.selectedTime,
