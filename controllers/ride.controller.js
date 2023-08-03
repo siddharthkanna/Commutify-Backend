@@ -1,8 +1,6 @@
-// controllers/rideController.js
 const Ride = require("../models/Ride");
 const User = require("../models/user");
 
-// Publish a new ride
 exports.publishRide = async (req, res) => {
   try {
     const {
@@ -18,7 +16,6 @@ exports.publishRide = async (req, res) => {
       price,
     } = req.body;
 
-    // Create a new ride object
     const newRide = new Ride({
       driverId,
       pickupLocation,
@@ -55,13 +52,23 @@ exports.bookRide = async (req, res) => {
     }
 
     // Check if the ride is already booked
-    if (ride.passengerId) {
-      return res.status(400).json({ message: "Ride is already booked" });
+    if (ride.passengerId.includes(passengerId)) {
+      return res
+        .status(400)
+        .json({ message: "Ride is already booked by the passenger" });
     }
 
-    // Update the ride with passenger details
-    ride.passengerId = passengerId;
-    ride.rideType = "booked"; // Update the rideType to "booked"
+    // Check if there are available seats
+    if (ride.passengerId.length >= ride.selectedCapacity) {
+      return res
+        .status(400)
+        .json({ message: "No available seats for this ride" });
+    }
+
+    // Update the ride with the new passenger ID
+    ride.passengerId.push(passengerId);
+    ride.rideType = "booked";
+    ride.rideStatus = "Upcoming";
     await ride.save();
 
     res.json({ message: "Ride booked successfully" });
@@ -72,20 +79,16 @@ exports.bookRide = async (req, res) => {
 
 exports.fetchPublishedRides = async (req, res) => {
   try {
-    const driverId = req.query.driverId; // Get the driverId from the query parameters
+    const driverId = req.query.driverId;
 
-    // Find the user in the users collection based on the driverId
     const user = await User.findOne({ uid: driverId });
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Fetch the published rides for the user based on the driverId
     const publishedRides = await Ride.find({ driverId });
 
-    // You can now process the publishedRides array to extract the required details
-    // For example, if you need to extract the pickup location name, destination location name, etc.:
     const ridesData = publishedRides.map((ride) => {
       return {
         rideId: ride._id,
@@ -105,9 +108,103 @@ exports.fetchPublishedRides = async (req, res) => {
         selectedTime: ride.selectedTime,
         selectedCapacity: ride.selectedCapacity,
         vehicleName: ride.selectedVehicle,
-        // Add other fields as needed
+        rideStatus: ride.rideStatus,
       };
     });
+
+    res.json(ridesData);
+  } catch (err) {
+    res.status(502).json({ err });
+  }
+};
+
+exports.fetchBookedRides = async (req, res) => {
+  try {
+    const passengerId = req.query.passengerId;
+
+    const user = await User.findOne({ uid: passengerId });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const bookedRides = await Ride.find({
+      passengerId: { $in: [passengerId] },
+    });
+
+    const ridesData = [];
+
+    for (const ride of bookedRides) {
+      const driver = await User.findOne({ uid: ride.driverId });
+
+      if (driver) {
+        ridesData.push({
+          rideId: ride._id,
+          driverName: driver.name,
+          pickupLocation: {
+            latitude: ride.pickupLocation[0].latitude,
+            longitude: ride.pickupLocation[0].longitude,
+            placeName: ride.pickupLocation[0].placeName,
+          },
+          destinationLocation: {
+            latitude: ride.destinationLocation[0].latitude,
+            longitude: ride.destinationLocation[0].longitude,
+            placeName: ride.destinationLocation[0].placeName,
+          },
+          price: ride.price,
+          selectedDate: ride.selectedDate,
+          selectedTime: ride.selectedTime,
+          selectedCapacity: ride.selectedCapacity,
+          vehicleName: ride.selectedVehicle,
+          rideStatus: ride.rideStatus,
+          passengerIds: ride.passengerId, // Include all passenger IDs
+        });
+      }
+    }
+
+    res.json(ridesData);
+  } catch (err) {
+    res.status(502).json({ err });
+  }
+};
+
+exports.fetchAvailableRides = async (req, res) => {
+  try {
+    const driverId = req.query.driverId;
+
+    // Query for published rides, excluding the ones posted by the current driver
+    const publishedRides = await Ride.find({ driverId: { $ne: driverId } });
+
+    const ridesData = [];
+
+    for (const ride of publishedRides) {
+      const user = await User.findOne({ uid: ride.driverId });
+
+      if (user) {
+        ridesData.push({
+          rideId: ride._id,
+          driverName: user.name,
+          pickupLocation: {
+            latitude: ride.pickupLocation[0].latitude,
+            longitude: ride.pickupLocation[0].longitude,
+            placeName: ride.pickupLocation[0].placeName,
+          },
+          destinationLocation: {
+            latitude: ride.destinationLocation[0].latitude,
+            longitude: ride.destinationLocation[0].longitude,
+            placeName: ride.destinationLocation[0].placeName,
+          },
+          price: ride.price,
+          selectedDate: ride.selectedDate,
+          selectedTime: ride.selectedTime,
+          selectedCapacity: ride.selectedCapacity,
+          vehicleName: ride.selectedVehicle,
+          rideStatus: ride.rideStatus,
+
+          // Add other fields as needed
+        });
+      }
+    }
 
     res.json(ridesData);
   } catch (err) {

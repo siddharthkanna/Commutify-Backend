@@ -3,12 +3,11 @@
 const mongoose = require("mongoose");
 
 const rideSchema = new mongoose.Schema({
-
   driverId: {
     type: String,
     required: true,
   },
-  passengerId: { type: String },
+  passengerId: [{ type: String }],
   pickupLocation: [
     {
       latitude: {
@@ -74,6 +73,12 @@ const rideSchema = new mongoose.Schema({
     type: String,
     enum: ["booked", "published"],
     required: true,
+  },
+  rideStatus: {
+    type: String,
+    enum: ["Upcoming", "Completed", "Cancelled"],
+    default: "Upcoming",
+    required: false,
   },
 });
 
