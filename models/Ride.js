@@ -1,13 +1,29 @@
 // models/Ride.js
 
 const mongoose = require("mongoose");
+const passengerSchema = new mongoose.Schema({
+  id: {
+    type: String,
+  },
+  status: {
+    type: String,
+    enum: ["Upcoming", "Completed", "Cancelled"],
+    default: "Upcoming",
+  },
+  name: {
+    type: String,
+  },
+  photoUrl: {
+    type: String,
+  },
+});
 
 const rideSchema = new mongoose.Schema({
   driverId: {
     type: String,
     required: true,
   },
-  passengerId: [{ type: String }],
+  passengerId: [passengerSchema],
   pickupLocation: [
     {
       latitude: {
@@ -49,8 +65,18 @@ const rideSchema = new mongoose.Schema({
     required: true,
   },
   selectedVehicle: {
-    type: String,
-    required: true,
+    vehicleNumber: {
+      type: String,
+      required: true,
+    },
+    vehicleName: {
+      type: String,
+      required: true,
+    },
+    vehicleType: {
+      type: String,
+      required: true,
+    },
   },
   selectedCapacity: {
     type: Number,

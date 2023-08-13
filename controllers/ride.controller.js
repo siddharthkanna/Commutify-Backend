@@ -27,7 +27,6 @@ exports.publishRide = async (req, res) => {
       selectedDate,
       selectedTime,
       price,
-
       rideType: "published",
     });
 
@@ -65,15 +64,16 @@ exports.bookRide = async (req, res) => {
         .json({ message: "No available seats for this ride" });
     }
 
-    // Update the ride with the new passenger ID
-    ride.passengerId.push(passengerId);
+    ride.passengerId.push({ id: passengerId.toString(), status: "Upcoming" });
     ride.rideType = "booked";
     ride.rideStatus = "Upcoming";
+    ride.selectedCapacity -= 1;
+
     await ride.save();
 
     res.json({ message: "Ride booked successfully" });
   } catch (err) {
-    res.status(500).json({ message: "Internal server error" });
+    res.status(500).json({ message: "Internal server error", err });
   }
 };
 
@@ -84,36 +84,55 @@ exports.fetchPublishedRides = async (req, res) => {
     const user = await User.findOne({ uid: driverId });
 
     if (!user) {
+      console.log("User not found!");
       return res.status(404).json({ message: "User not found" });
     }
 
     const publishedRides = await Ride.find({ driverId });
 
-    const ridesData = publishedRides.map((ride) => {
-      return {
-        rideId: ride._id,
-        driverName: user.name,
-        pickupLocation: {
-          latitude: ride.pickupLocation[0].latitude,
-          longitude: ride.pickupLocation[0].longitude,
-          placeName: ride.pickupLocation[0].placeName,
-        },
-        destinationLocation: {
-          latitude: ride.destinationLocation[0].latitude,
-          longitude: ride.destinationLocation[0].longitude,
-          placeName: ride.destinationLocation[0].placeName,
-        },
-        price: ride.price,
-        selectedDate: ride.selectedDate,
-        selectedTime: ride.selectedTime,
-        selectedCapacity: ride.selectedCapacity,
-        vehicleName: ride.selectedVehicle,
-        rideStatus: ride.rideStatus,
-      };
-    });
+    const ridesData = await Promise.all(
+      publishedRides.map(async (ride) => {
+        const passengerInfo = await Promise.all(
+          ride.passengerId.map(async (passenger) => {
+            // Populate passenger information
+            const passengerUser = await User.findOne({ uid: passenger.id });
+            return {
+              passengerId: passenger.id,
+              passengerName: passengerUser
+                ? passengerUser.name
+                : "Unknown Passenger",
+              passengerStatus: passenger.status,
+              passengerPhotoUrl: passengerUser ? passengerUser.photoUrl : null,
+              passengerNumber: passengerUser.mobileNumber.toString(),
+            };
+          })
+        );
+
+        const vehicleDetails = {
+          vehicleName: ride.selectedVehicle.vehicleName,
+          vehicleNumber: ride.selectedVehicle.vehicleNumber,
+          vehicleType: ride.selectedVehicle.vehicleType,
+        };
+
+        return {
+          rideId: ride._id,
+          driverName: user.name,
+          pickupLocation: ride.pickupLocation[0],
+          destinationLocation: ride.destinationLocation[0],
+          price: ride.price,
+          selectedDate: ride.selectedDate,
+          selectedTime: ride.selectedTime,
+          selectedCapacity: ride.selectedCapacity,
+          vehicle: vehicleDetails,
+          rideStatus: ride.rideStatus,
+          passengerInfo: passengerInfo,
+        };
+      })
+    );
 
     res.json(ridesData);
   } catch (err) {
+    console.log(err);
     res.status(502).json({ err });
   }
 };
@@ -129,7 +148,7 @@ exports.fetchBookedRides = async (req, res) => {
     }
 
     const bookedRides = await Ride.find({
-      passengerId: { $in: [passengerId] },
+      "passengerId.id": passengerId,
     });
 
     const ridesData = [];
@@ -138,9 +157,24 @@ exports.fetchBookedRides = async (req, res) => {
       const driver = await User.findOne({ uid: ride.driverId });
 
       if (driver) {
+        const passenger = ride.passengerId.find(
+          (passenger) => passenger.id === passengerId
+        );
+
+        const passengerStatus = passenger ? passenger.status : "Unknown";
+        const passengerName = passenger ? user.name : "Unknown";
+
+        const vehicleDetails = {
+          vehicleName: ride.selectedVehicle.vehicleName,
+          vehicleNumber: ride.selectedVehicle.vehicleNumber,
+          vehicleType: ride.selectedVehicle.vehicleType,
+        };
+
         ridesData.push({
           rideId: ride._id,
           driverName: driver.name,
+          driverNumber: driver.mobileNumber.toString(),
+          photoUrl: driver.photoUrl,
           pickupLocation: {
             latitude: ride.pickupLocation[0].latitude,
             longitude: ride.pickupLocation[0].longitude,
@@ -155,9 +189,10 @@ exports.fetchBookedRides = async (req, res) => {
           selectedDate: ride.selectedDate,
           selectedTime: ride.selectedTime,
           selectedCapacity: ride.selectedCapacity,
-          vehicleName: ride.selectedVehicle,
+          vehicle: vehicleDetails,
           rideStatus: ride.rideStatus,
-          passengerIds: ride.passengerId, // Include all passenger IDs
+          passengerStatus: passengerStatus,
+          passengerName: passengerName,
         });
       }
     }
@@ -172,8 +207,10 @@ exports.fetchAvailableRides = async (req, res) => {
   try {
     const driverId = req.query.driverId;
 
-    // Query for published rides, excluding the ones posted by the current driver
-    const publishedRides = await Ride.find({ driverId: { $ne: driverId } });
+    const publishedRides = await Ride.find({
+      driverId: { $ne: driverId },
+      rideStatus: { $ne: "Completed" },
+    });
 
     const ridesData = [];
 
@@ -184,6 +221,7 @@ exports.fetchAvailableRides = async (req, res) => {
         ridesData.push({
           rideId: ride._id,
           driverName: user.name,
+          photoUrl: user.photoUrl,
           pickupLocation: {
             latitude: ride.pickupLocation[0].latitude,
             longitude: ride.pickupLocation[0].longitude,
@@ -198,10 +236,8 @@ exports.fetchAvailableRides = async (req, res) => {
           selectedDate: ride.selectedDate,
           selectedTime: ride.selectedTime,
           selectedCapacity: ride.selectedCapacity,
-          vehicleName: ride.selectedVehicle,
+          vehicle: ride.selectedVehicle,
           rideStatus: ride.rideStatus,
-
-          // Add other fields as needed
         });
       }
     }
@@ -209,5 +245,130 @@ exports.fetchAvailableRides = async (req, res) => {
     res.json(ridesData);
   } catch (err) {
     res.status(502).json({ err });
+  }
+};
+
+//Complete Ride
+exports.completeRide = async (req, res) => {
+  try {
+    const rideId = req.params.rideId;
+
+    const ride = await Ride.findById(rideId);
+
+    if (!ride) {
+      return res.status(404).json({ message: "Ride not found" });
+    }
+
+    ride.rideStatus = "Completed";
+    await ride.save();
+
+    const driver = await User.findOne({ uid: ride.driverId });
+    if (driver) {
+      driver.ridesAsDriver.push(ride);
+      await driver.save();
+    }
+
+    for (const passenger of ride.passengerId) {
+      const passengerId = passenger.id;
+      const passengerToUpdate = await User.findOne({ uid: passengerId });
+      if (passengerToUpdate) {
+        passengerToUpdate.ridesAsPassenger.push(ride);
+        passenger.status = "Completed";
+        await passengerToUpdate.save();
+      }
+    }
+
+    res.json({ message: "Ride completed successfully" });
+  } catch (err) {
+    res.status(500).json({ message: "Error completing the ride", error: err });
+  }
+};
+
+exports.cancelRideByDriver = async (req, res) => {
+  try {
+    const rideId = req.params.rideId;
+
+    // Find the ride by its ID
+    const ride = await Ride.findById(rideId);
+
+    if (!ride) {
+      return res.status(404).json({ message: "Ride not found" });
+    }
+
+    // Get the driverId from the ride
+    const driverId = ride.driverId;
+
+    // Check if the ride is already completed or canceled
+    if (ride.rideStatus === "Completed" || ride.rideStatus === "Cancelled") {
+      return res.status(400).json({
+        message: "Cannot cancel a completed or already canceled ride",
+      });
+    }
+
+    // Set the status of all passengers to "Cancelled"
+    for (const passenger of ride.passengerId) {
+      passenger.status = "Cancelled";
+      const passengerToUpdate = await User.findOne({ uid: passenger.id });
+      if (passengerToUpdate) {
+        passengerToUpdate.ridesAsPassenger =
+          passengerToUpdate.ridesAsPassenger.filter(
+            (rideId) => rideId.toString() !== ride._id.toString()
+          );
+        await passengerToUpdate.save();
+      }
+    }
+
+    // Update the ride status to "Cancelled"
+    ride.rideStatus = "Cancelled";
+    await ride.save();
+
+    // Remove the ride from the driver's ridesAsDriver array
+    const driver = await User.findOne({ uid: driverId });
+    if (driver) {
+      driver.ridesAsDriver = driver.ridesAsDriver.filter(
+        (rideId) => rideId.toString() !== ride._id.toString()
+      );
+      await driver.save();
+    }
+
+    res.json({ message: "Ride cancelled successfully" });
+  } catch (err) {
+    res.status(500).json({ message: "Internal server error", error: err });
+  }
+};
+
+// Passenger cancels the ride
+exports.cancelRideByPassenger = async (req, res) => {
+  try {
+    const rideId = req.params.rideId;
+    const passengerId = req.query.passengerId; // Get the passenger ID from the query parameter
+
+    // Find the ride by its ID
+    const ride = await Ride.findById(rideId);
+
+    if (!ride) {
+      return res.status(404).json({ message: "Ride not found" });
+    }
+
+    // Find the passenger in the ride's passengerId array
+    const passenger = ride.passengerId.find(
+      (passenger) => passenger.id === passengerId
+    );
+
+    if (!passenger) {
+      return res
+        .status(400)
+        .json({ message: "Passenger is not part of the ride" });
+    }
+
+    passenger.status = "Cancelled";
+
+    ride.selectedCapacity += 1;
+
+    await ride.save();
+
+    res.json({ message: "Ride cancelled successfully" });
+  } catch (err) {
+    res.status(500).json({ message: "Internal server error", error: err });
   }
 };

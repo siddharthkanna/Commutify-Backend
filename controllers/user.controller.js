@@ -19,7 +19,7 @@ exports.checkUserExists = async (req, res) => {
 
 exports.createUser = async (req, res) => {
   try {
-    const { uid, email, name, mobileNumber, vehicles } = req.body;
+    const { uid, email, name, mobileNumber, vehicles, photoUrl } = req.body;
 
     const user = new User({
       uid,
@@ -27,6 +27,7 @@ exports.createUser = async (req, res) => {
       name,
       mobileNumber,
       vehicles,
+      photoUrl,
     });
 
     await user.save();
@@ -48,10 +49,16 @@ exports.getVehiclesByUserId = async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // Extract the vehicle names from the user data
-    const vehicleNames = user.vehicles.map((vehicle) => vehicle.vehicleName);
+    // Extract the vehicle details from the user data
+    const vehicles = user.vehicles.map((vehicle) => {
+      return {
+        vehicleName: vehicle.vehicleName,
+        vehicleNumber: vehicle.vehicleNumber,
+        vehicleType: vehicle.vehicleType,
+      };
+    });
 
-    res.status(200).json({ vehicleNames });
+    res.status(200).json({ vehicles });
   } catch (error) {
     console.error("Error fetching user details:", error);
     res.status(500).json({ error: "Internal Server Error" });

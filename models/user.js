@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const Ride = require("./Ride");
 
 const userSchema = new mongoose.Schema({
   uid: {
@@ -48,9 +49,11 @@ const userSchema = new mongoose.Schema({
       ref: "Ride",
     },
   ],
+  photoUrl: { 
+    type: String,
+    required: false, 
+  },
 });
-
-
 
 const User = mongoose.model("User", userSchema);
 
