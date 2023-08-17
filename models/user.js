@@ -22,6 +22,10 @@ const userSchema = new mongoose.Schema({
   },
   vehicles: [
     {
+      vehicleId: {
+        type: mongoose.Schema.Types.ObjectId,
+      },
+
       vehicleNumber: {
         type: String,
         required: true,
@@ -49,9 +53,9 @@ const userSchema = new mongoose.Schema({
       ref: "Ride",
     },
   ],
-  photoUrl: { 
+  photoUrl: {
     type: String,
-    required: false, 
+    required: false,
   },
 });
 
