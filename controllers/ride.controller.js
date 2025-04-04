@@ -132,11 +132,18 @@ exports.publishRide = async (req, res) => {
 
 exports.bookRide = async (req, res) => {
   try {
-    const { rideId, passengerId, passengerCount = 1, specialRequests } = req.body;
+    const rideId = req.params.rideId || req.body.rideId;  // Get rideId from URL path or body
+    const userId = req.body.userId || req.body.passengerId;  // Support both new and old parameter names
+    const { passengerCount = 1, specialRequests } = req.body;  // Get data from request body
+
+    // Input validation
+    if (!rideId || !userId) {
+      return res.status(400).json({ message: "Ride ID and User ID are required" });
+    }
 
     // Find the user by uid
     const passenger = await prisma.user.findUnique({
-      where: { uid: passengerId }
+      where: { uid: userId }
     });
 
     if (!passenger) {
@@ -235,10 +242,10 @@ exports.bookRide = async (req, res) => {
 
 exports.fetchPublishedRides = async (req, res) => {
   try {
-    const driverId = req.query.driverId;
+    const userId = req.params.userId;
 
     // Find the user by uid
-    const user = await prisma.findUserByUid(driverId);
+    const user = await prisma.findUserByUid(userId);
 
     if (!user) {
       console.log("User not found!");
@@ -329,10 +336,10 @@ exports.fetchPublishedRides = async (req, res) => {
 
 exports.fetchBookedRides = async (req, res) => {
   try {
-    const passengerId = req.query.passengerId;
+    const userId = req.params.userId;
 
     // Find the user by uid
-    const user = await prisma.findUserByUid(passengerId);
+    const user = await prisma.findUserByUid(userId);
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
@@ -428,22 +435,37 @@ exports.fetchBookedRides = async (req, res) => {
 
 exports.fetchAvailableRides = async (req, res) => {
   try {
-    const driverId = req.query.driverId;
+    // Extract filter parameters from query string (optional)
+    const { userId, maxPrice, minSeats, fromDate, toDate } = req.query;
 
-    // Find the user by uid
-    const user = await prisma.findUserByUid(driverId);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    // Find the user if userId is provided
+    let user = null;
+    if (userId) {
+      user = await prisma.findUserByUid(userId);
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
     }
 
-    // Find all rides not by this driver and not completed
+    // Build dynamic query with filters
+    const whereClause = {
+      rideStatus: { not: "Completed" },
+      selectedDate: { gte: new Date() }
+    };
+
+    // Only exclude rides from this user if a userId was provided
+    if (user) {
+      whereClause.NOT = { driverId: user.id };
+    }
+    
+    // Apply price filter if provided
+    if (maxPrice) {
+      whereClause.price = { lte: parseFloat(maxPrice) };
+    }
+
+    // Find rides with filters
     const availableRides = await prisma.ride.findMany({
-      where: {
-        NOT: { driverId: user.id },
-        rideStatus: { not: "Completed" },
-        selectedDate: { gte: new Date() }
-      },
+      where: whereClause,
       include: {
         driver: {
           include: {
@@ -542,66 +564,82 @@ exports.fetchAvailableRides = async (req, res) => {
 exports.completeRide = async (req, res) => {
   try {
     const rideId = req.params.rideId;
+    const { userId } = req.body;  // Get user ID from body
 
-    // Find the ride
-    const ride = await prisma.ride.findUnique({
-      where: { id: rideId },
-      include: { bookings: true }
-    });
-
-    if (!ride) {
-      return res.status(404).json({ message: "Ride not found" });
-    }
-
-    // Check if the ride is already completed or canceled
-    if (ride.rideStatus === "Completed" || ride.rideStatus === "Cancelled") {
-      return res.status(400).json({ message: "Ride is already completed or cancelled" });
-    }
-
-    // Update ride status
-    await prisma.ride.update({
-      where: { id: rideId },
-      data: { 
-        rideStatus: "Completed",
-        updatedAt: new Date()
+    // Verify user exists and is authorized (should be the driver)
+    if (userId) {
+      const user = await prisma.user.findUnique({ where: { uid: userId } });
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
       }
-    });
-
-    // Update all bookings for this ride
-    for (const booking of ride.bookings) {
-      await prisma.booking.update({
-        where: { id: booking.id },
+      
+      // Find the ride
+      const ride = await prisma.ride.findUnique({
+        where: { id: rideId },
+        include: { bookings: true }
+      });
+      
+      if (!ride) {
+        return res.status(404).json({ message: "Ride not found" });
+      }
+      
+      // Verify user is the driver
+      if (ride.driverId !== user.id) {
+        return res.status(403).json({ message: "Only the driver can complete this ride" });
+      }
+      
+      // Update ride status
+      await prisma.ride.update({
+        where: { id: rideId },
         data: { 
-          status: "completed",
-          paymentStatus: "COMPLETED",
+          rideStatus: "Completed",
           updatedAt: new Date()
         }
       });
-    }
 
-    res.json({ message: "Ride completed successfully" });
+      // Update all bookings for this ride
+      for (const booking of ride.bookings) {
+        await prisma.booking.update({
+          where: { id: booking.id },
+          data: { 
+            status: "completed",
+            paymentStatus: "COMPLETED",
+            updatedAt: new Date()
+          }
+        });
+      }
+
+      res.json({ message: "Ride completed successfully" });
+    } else {
+      return res.status(400).json({ message: "User ID is required" });
+    }
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error completing the ride", error: err.message });
   }
 };
 
-// Combined cancel ride function that handles both driver and passenger cancellations
+// Simplified and unified cancel ride function for both drivers and passengers
 exports.cancelRide = async (req, res) => {
   try {
     const rideId = req.params.rideId;
-    const { userUid, isDriver } = req.body; // Get the user ID and role from request body
+    const { userId, role } = req.body; // Get user ID and optional role
+    
+    // Input validation
+    if (!rideId || !userId) {
+      return res.status(400).json({ message: "Ride ID and User ID are required" });
+    }
 
-    // Find user by uid
+    // Find user
     const user = await prisma.user.findUnique({
-      where: { uid: userUid }
+      where: { uid: userId }
     });
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Find the ride with bookings
+    // Find the ride with necessary relationships
     const ride = await prisma.ride.findUnique({
       where: { id: rideId },
       include: { 
@@ -626,12 +664,20 @@ exports.cancelRide = async (req, res) => {
       return res.status(400).json({ message: "Cannot cancel past rides" });
     }
 
-    // If cancellation is by driver, verify the user is the ride's driver
+    const isDriver = ride.driverId === user.id;
+    const isPassenger = ride.bookings.some(booking => booking.passengerId === user.id);
+    
+    // If role is specified, verify it matches reality
+    if (role === 'driver' && !isDriver) {
+      return res.status(403).json({ message: "You are not the driver of this ride" });
+    }
+    
+    if (role === 'passenger' && !isPassenger) {
+      return res.status(403).json({ message: "You are not a passenger on this ride" });
+    }
+    
+    // Handle cancellation based on user's actual relationship to the ride
     if (isDriver) {
-      if (ride.driverId !== user.id) {
-        return res.status(403).json({ message: "Only the driver of this ride can cancel it" });
-      }
-      
       // Driver is cancelling - update all bookings
       for (const booking of ride.bookings) {
         await prisma.booking.update({
@@ -653,19 +699,19 @@ exports.cancelRide = async (req, res) => {
         }
       });
       
-      return res.json({ message: "Ride cancelled successfully by driver" });
-    } else {
-      // Passenger is cancelling - find booking for this passenger
+      return res.json({ 
+        success: true,
+        message: "Ride cancelled successfully",
+        cancelledBy: "driver"
+      });
+    } else if (isPassenger) {
+      // Passenger is cancelling - find their booking
       const booking = await prisma.booking.findFirst({
         where: {
           rideId: rideId,
           passengerId: user.id
         }
       });
-
-      if (!booking) {
-        return res.status(400).json({ message: "You are not part of this ride" });
-      }
 
       // Update booking status
       await prisma.booking.update({
@@ -695,24 +741,26 @@ exports.cancelRide = async (req, res) => {
         });
       }
       
-      return res.json({ message: "Booking cancelled successfully by passenger" });
+      return res.json({ 
+        success: true,
+        message: "Booking cancelled successfully",
+        cancelledBy: "passenger"
+      });
+    } else {
+      // User has no relationship to this ride
+      return res.status(403).json({ 
+        message: "You don't have permission to cancel this ride" 
+      });
     }
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Internal server error", error: err.message });
+    res.status(500).json({ 
+      success: false,
+      message: "Error cancelling ride", 
+      error: err.message 
+    });
   }
 };
-
-// You can keep these functions for backward compatibility but make them use the combined function
-// exports.cancelRideByDriver = async (req, res) => {
-//   req.body.isDriver = true;
-//   return exports.cancelRide(req, res);
-// };
-
-// exports.cancelRideByPassenger = async (req, res) => {
-//   req.body.isDriver = false;
-//   return exports.cancelRide(req, res);
-// };
 
 // Add new controller methods for messaging
 exports.sendMessage = async (req, res) => {
@@ -750,11 +798,11 @@ exports.sendMessage = async (req, res) => {
 // Get messages between two users
 exports.getMessages = async (req, res) => {
   try {
-    const { userUid, otherUserUid } = req.params;
+    const { userId, otherUserId } = req.params; // Using consistent parameter names
     
     // Find users
-    const user = await prisma.user.findUnique({ where: { uid: userUid } });
-    const otherUser = await prisma.user.findUnique({ where: { uid: otherUserUid } });
+    const user = await prisma.user.findUnique({ where: { uid: userId } });
+    const otherUser = await prisma.user.findUnique({ where: { uid: otherUserId } });
     
     if (!user || !otherUser) {
       return res.status(404).json({ error: "One or both users not found" });
