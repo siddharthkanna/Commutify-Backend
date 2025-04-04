@@ -1,5 +1,4 @@
-const Ride = require("../models/Ride");
-const User = require("../models/user");
+const prisma = require("../prisma/prisma-client");
 
 exports.publishRide = async (req, res) => {
   try {
@@ -16,26 +15,65 @@ exports.publishRide = async (req, res) => {
       price,
     } = req.body;
 
-    const newRide = new Ride({
-      driverId,
-      pickupLocation,
-      destinationLocation,
-      immediateMode,
-      scheduledMode,
-      selectedVehicle,
-      selectedCapacity,
-      selectedDate,
-      selectedTime,
-      price,
-      rideType: "published",
+    // Find the user by uid
+    const user = await prisma.user.findUnique({
+      where: { uid: driverId },
+      include: { vehicles: true }
     });
 
-    // Save the ride in the database
-    await newRide.save();
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Find the vehicle
+    const vehicle = await prisma.vehicle.findFirst({
+      where: {
+        vehicleNumber: selectedVehicle.vehicleNumber,
+        ownerId: user.id
+      }
+    });
+
+    if (!vehicle) {
+      return res.status(404).json({ message: "Vehicle not found" });
+    }
+
+    // Create pickup and destination locations
+    const newRide = await prisma.ride.create({
+      data: {
+        driverId: user.id,
+        vehicleId: vehicle.id,
+        immediateMode,
+        scheduledMode,
+        selectedCapacity,
+        selectedDate: new Date(selectedDate),
+        selectedTime,
+        price,
+        rideType: "published",
+        pickupLocations: {
+          create: [
+            {
+              latitude: pickupLocation[0].latitude,
+              longitude: pickupLocation[0].longitude,
+              placeName: pickupLocation[0].placeName
+            }
+          ]
+        },
+        destinationLocations: {
+          create: [
+            {
+              latitude: destinationLocation[0].latitude,
+              longitude: destinationLocation[0].longitude,
+              placeName: destinationLocation[0].placeName
+            }
+          ]
+        }
+      }
+    });
 
     res.status(201).json({ message: "Ride published successfully" });
   } catch (err) {
-    res.status(500).json({ err });
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 };
 
@@ -43,37 +81,72 @@ exports.bookRide = async (req, res) => {
   try {
     const { rideId, passengerId } = req.body;
 
+    // Find the user by uid
+    const passenger = await prisma.user.findUnique({
+      where: { uid: passengerId }
+    });
+
+    if (!passenger) {
+      return res.status(404).json({ message: "Passenger not found" });
+    }
+
     // Find the ride by its ID
-    const ride = await Ride.findById(rideId);
+    const ride = await prisma.ride.findUnique({
+      where: { id: rideId },
+      include: { bookings: true }
+    });
 
     if (!ride) {
       return res.status(404).json({ message: "Ride not found" });
     }
 
-    // Check if the ride is already booked
-    if (ride.passengerId.includes(passengerId)) {
-      return res
-        .status(400)
-        .json({ message: "Ride is already booked by the passenger" });
+    // Check if the ride is already booked by this passenger
+    const existingBooking = await prisma.booking.findFirst({
+      where: {
+        rideId: ride.id,
+        passengerId: passenger.id
+      }
+    });
+
+    if (existingBooking) {
+      return res.status(400).json({ message: "Ride is already booked by the passenger" });
     }
 
     // Check if there are available seats
-    if (ride.passengerId.length >= ride.selectedCapacity) {
-      return res
-        .status(400)
-        .json({ message: "No available seats for this ride" });
+    if (ride.bookings.length >= ride.selectedCapacity) {
+      return res.status(400).json({ message: "No available seats for this ride" });
     }
 
-    ride.passengerId.push({ id: passengerId.toString(), status: "Upcoming" });
-    ride.rideType = "booked";
-    ride.rideStatus = "Upcoming";
-    ride.selectedCapacity -= 1;
+    // Get the ride driver
+    const driver = await prisma.user.findUnique({
+      where: { id: ride.driverId }
+    });
 
-    await ride.save();
+    // Create a new booking
+    await prisma.booking.create({
+      data: {
+        passengerId: passenger.id,
+        driverId: driver.id,
+        rideId: ride.id,
+        source: ride.pickupLocations[0]?.placeName || "Unknown",
+        destination: ride.destinationLocations[0]?.placeName || "Unknown",
+        status: "ongoing"
+      }
+    });
+
+    // Update the ride
+    await prisma.ride.update({
+      where: { id: ride.id },
+      data: {
+        rideType: "booked",
+        rideStatus: "Upcoming"
+      }
+    });
 
     res.json({ message: "Ride booked successfully" });
   } catch (err) {
-    res.status(500).json({ message: "Internal server error", err });
+    console.error(err);
+    res.status(500).json({ message: "Internal server error", error: err.message });
   }
 };
 
@@ -81,59 +154,68 @@ exports.fetchPublishedRides = async (req, res) => {
   try {
     const driverId = req.query.driverId;
 
-    const user = await User.findOne({ uid: driverId });
+    // Find the user by uid
+    const user = await prisma.user.findUnique({
+      where: { uid: driverId }
+    });
 
     if (!user) {
       console.log("User not found!");
       return res.status(404).json({ message: "User not found" });
     }
 
-    const publishedRides = await Ride.find({ driverId });
+    // Find rides by driver id
+    const publishedRides = await prisma.ride.findMany({
+      where: { driverId: user.id },
+      include: {
+        pickupLocations: true,
+        destinationLocations: true,
+        bookings: {
+          include: {
+            passenger: true
+          }
+        },
+        vehicle: true
+      }
+    });
 
-    const ridesData = await Promise.all(
-      publishedRides.map(async (ride) => {
-        const passengerInfo = await Promise.all(
-          ride.passengerId.map(async (passenger) => {
-            // Populate passenger information
-            const passengerUser = await User.findOne({ uid: passenger.id });
-            return {
-              passengerId: passenger.id,
-              passengerName: passengerUser
-                ? passengerUser.name
-                : "Unknown Passenger",
-              passengerStatus: passenger.status,
-              passengerPhotoUrl: passengerUser ? passengerUser.photoUrl : null,
-              passengerNumber: passengerUser.mobileNumber.toString(),
-            };
-          })
-        );
-
-        const vehicleDetails = {
-          vehicleName: ride.selectedVehicle.vehicleName,
-          vehicleNumber: ride.selectedVehicle.vehicleNumber,
-          vehicleType: ride.selectedVehicle.vehicleType,
-        };
-
+    const ridesData = publishedRides.map(ride => {
+      const passengerInfo = ride.bookings.map(booking => {
+        const passenger = booking.passenger;
         return {
-          rideId: ride._id,
-          driverName: user.name,
-          pickupLocation: ride.pickupLocation[0],
-          destinationLocation: ride.destinationLocation[0],
-          price: ride.price,
-          selectedDate: ride.selectedDate,
-          selectedTime: ride.selectedTime,
-          selectedCapacity: ride.selectedCapacity,
-          vehicle: vehicleDetails,
-          rideStatus: ride.rideStatus,
-          passengerInfo: passengerInfo,
+          passengerId: passenger.uid,
+          passengerName: passenger.name,
+          passengerStatus: booking.status,
+          passengerPhotoUrl: passenger.photoUrl,
+          passengerNumber: passenger.mobileNumber
         };
-      })
-    );
+      });
+
+      const vehicleDetails = {
+        vehicleName: ride.vehicle.vehicleName,
+        vehicleNumber: ride.vehicle.vehicleNumber,
+        vehicleType: ride.vehicle.vehicleType
+      };
+
+      return {
+        rideId: ride.id,
+        driverName: user.name,
+        pickupLocation: ride.pickupLocations[0],
+        destinationLocation: ride.destinationLocations[0],
+        price: ride.price,
+        selectedDate: ride.selectedDate,
+        selectedTime: ride.selectedTime,
+        selectedCapacity: ride.selectedCapacity,
+        vehicle: vehicleDetails,
+        rideStatus: ride.rideStatus,
+        passengerInfo: passengerInfo
+      };
+    });
 
     res.json(ridesData);
   } catch (err) {
-    console.log(err);
-    res.status(502).json({ err });
+    console.error(err);
+    res.status(502).json({ error: err.message });
   }
 };
 
@@ -141,65 +223,68 @@ exports.fetchBookedRides = async (req, res) => {
   try {
     const passengerId = req.query.passengerId;
 
-    const user = await User.findOne({ uid: passengerId });
+    // Find the user by uid
+    const user = await prisma.user.findUnique({
+      where: { uid: passengerId }
+    });
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const bookedRides = await Ride.find({
-      "passengerId.id": passengerId,
+    // Find bookings for this passenger
+    const bookings = await prisma.booking.findMany({
+      where: { passengerId: user.id },
+      include: {
+        ride: {
+          include: {
+            driver: true,
+            vehicle: true,
+            pickupLocations: true,
+            destinationLocations: true
+          }
+        }
+      }
     });
 
-    const ridesData = [];
+    const ridesData = bookings.map(booking => {
+      const ride = booking.ride;
+      const driver = ride.driver;
 
-    for (const ride of bookedRides) {
-      const driver = await User.findOne({ uid: ride.driverId });
-
-      if (driver) {
-        const passenger = ride.passengerId.find(
-          (passenger) => passenger.id === passengerId
-        );
-
-        const passengerStatus = passenger ? passenger.status : "Unknown";
-        const passengerName = passenger ? user.name : "Unknown";
-
-        const vehicleDetails = {
-          vehicleName: ride.selectedVehicle.vehicleName,
-          vehicleNumber: ride.selectedVehicle.vehicleNumber,
-          vehicleType: ride.selectedVehicle.vehicleType,
-        };
-
-        ridesData.push({
-          rideId: ride._id,
-          driverName: driver.name,
-          driverNumber: driver.mobileNumber.toString(),
-          photoUrl: driver.photoUrl,
-          pickupLocation: {
-            latitude: ride.pickupLocation[0].latitude,
-            longitude: ride.pickupLocation[0].longitude,
-            placeName: ride.pickupLocation[0].placeName,
-          },
-          destinationLocation: {
-            latitude: ride.destinationLocation[0].latitude,
-            longitude: ride.destinationLocation[0].longitude,
-            placeName: ride.destinationLocation[0].placeName,
-          },
-          price: ride.price,
-          selectedDate: ride.selectedDate,
-          selectedTime: ride.selectedTime,
-          selectedCapacity: ride.selectedCapacity,
-          vehicle: vehicleDetails,
-          rideStatus: ride.rideStatus,
-          passengerStatus: passengerStatus,
-          passengerName: passengerName,
-        });
-      }
-    }
+      return {
+        rideId: ride.id,
+        driverName: driver.name,
+        driverNumber: driver.mobileNumber,
+        photoUrl: driver.photoUrl,
+        pickupLocation: ride.pickupLocations[0] ? {
+          latitude: ride.pickupLocations[0].latitude,
+          longitude: ride.pickupLocations[0].longitude,
+          placeName: ride.pickupLocations[0].placeName
+        } : null,
+        destinationLocation: ride.destinationLocations[0] ? {
+          latitude: ride.destinationLocations[0].latitude,
+          longitude: ride.destinationLocations[0].longitude,
+          placeName: ride.destinationLocations[0].placeName
+        } : null,
+        price: ride.price,
+        selectedDate: ride.selectedDate,
+        selectedTime: ride.selectedTime,
+        selectedCapacity: ride.selectedCapacity,
+        vehicle: {
+          vehicleName: ride.vehicle.vehicleName,
+          vehicleNumber: ride.vehicle.vehicleNumber,
+          vehicleType: ride.vehicle.vehicleType
+        },
+        rideStatus: ride.rideStatus,
+        passengerStatus: booking.status,
+        passengerName: user.name
+      };
+    });
 
     res.json(ridesData);
   } catch (err) {
-    res.status(502).json({ err });
+    console.error(err);
+    res.status(502).json({ error: err.message });
   }
 };
 
@@ -207,44 +292,61 @@ exports.fetchAvailableRides = async (req, res) => {
   try {
     const driverId = req.query.driverId;
 
-    const publishedRides = await Ride.find({
-      driverId: { $ne: driverId },
-      rideStatus: { $ne: "Completed" },
+    // Find the user by uid
+    const user = await prisma.user.findUnique({
+      where: { uid: driverId }
     });
 
-    const ridesData = [];
-
-    for (const ride of publishedRides) {
-      const user = await User.findOne({ uid: ride.driverId });
-
-      if (user) {
-        ridesData.push({
-          rideId: ride._id,
-          driverName: user.name,
-          photoUrl: user.photoUrl,
-          pickupLocation: {
-            latitude: ride.pickupLocation[0].latitude,
-            longitude: ride.pickupLocation[0].longitude,
-            placeName: ride.pickupLocation[0].placeName,
-          },
-          destinationLocation: {
-            latitude: ride.destinationLocation[0].latitude,
-            longitude: ride.destinationLocation[0].longitude,
-            placeName: ride.destinationLocation[0].placeName,
-          },
-          price: ride.price,
-          selectedDate: ride.selectedDate,
-          selectedTime: ride.selectedTime,
-          selectedCapacity: ride.selectedCapacity,
-          vehicle: ride.selectedVehicle,
-          rideStatus: ride.rideStatus,
-        });
-      }
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
     }
+
+    // Find all rides not by this driver and not completed
+    const availableRides = await prisma.ride.findMany({
+      where: {
+        NOT: { driverId: user.id },
+        rideStatus: { not: "Completed" }
+      },
+      include: {
+        driver: true,
+        vehicle: true,
+        pickupLocations: true,
+        destinationLocations: true
+      }
+    });
+
+    const ridesData = availableRides.map(ride => {
+      return {
+        rideId: ride.id,
+        driverName: ride.driver.name,
+        photoUrl: ride.driver.photoUrl,
+        pickupLocation: ride.pickupLocations[0] ? {
+          latitude: ride.pickupLocations[0].latitude,
+          longitude: ride.pickupLocations[0].longitude,
+          placeName: ride.pickupLocations[0].placeName
+        } : null,
+        destinationLocation: ride.destinationLocations[0] ? {
+          latitude: ride.destinationLocations[0].latitude,
+          longitude: ride.destinationLocations[0].longitude,
+          placeName: ride.destinationLocations[0].placeName
+        } : null,
+        price: ride.price,
+        selectedDate: ride.selectedDate,
+        selectedTime: ride.selectedTime,
+        selectedCapacity: ride.selectedCapacity,
+        vehicle: {
+          vehicleName: ride.vehicle.vehicleName,
+          vehicleNumber: ride.vehicle.vehicleNumber,
+          vehicleType: ride.vehicle.vehicleType
+        },
+        rideStatus: ride.rideStatus
+      };
+    });
 
     res.json(ridesData);
   } catch (err) {
-    res.status(502).json({ err });
+    console.error(err);
+    res.status(502).json({ error: err.message });
   }
 };
 
@@ -253,34 +355,34 @@ exports.completeRide = async (req, res) => {
   try {
     const rideId = req.params.rideId;
 
-    const ride = await Ride.findById(rideId);
+    // Find the ride
+    const ride = await prisma.ride.findUnique({
+      where: { id: rideId },
+      include: { bookings: true }
+    });
 
     if (!ride) {
       return res.status(404).json({ message: "Ride not found" });
     }
 
-    ride.rideStatus = "Completed";
-    await ride.save();
+    // Update ride status
+    await prisma.ride.update({
+      where: { id: rideId },
+      data: { rideStatus: "Completed" }
+    });
 
-    const driver = await User.findOne({ uid: ride.driverId });
-    if (driver) {
-      driver.ridesAsDriver.push(ride);
-      await driver.save();
-    }
-
-    for (const passenger of ride.passengerId) {
-      const passengerId = passenger.id;
-      const passengerToUpdate = await User.findOne({ uid: passengerId });
-      if (passengerToUpdate) {
-        passengerToUpdate.ridesAsPassenger.push(ride);
-        passenger.status = "Completed";
-        await passengerToUpdate.save();
-      }
+    // Update all bookings for this ride
+    for (const booking of ride.bookings) {
+      await prisma.booking.update({
+        where: { id: booking.id },
+        data: { status: "confirmed" }
+      });
     }
 
     res.json({ message: "Ride completed successfully" });
   } catch (err) {
-    res.status(500).json({ message: "Error completing the ride", error: err });
+    console.error(err);
+    res.status(500).json({ message: "Error completing the ride", error: err.message });
   }
 };
 
@@ -288,15 +390,15 @@ exports.cancelRideByDriver = async (req, res) => {
   try {
     const rideId = req.params.rideId;
 
-    // Find the ride by its ID
-    const ride = await Ride.findById(rideId);
+    // Find the ride
+    const ride = await prisma.ride.findUnique({
+      where: { id: rideId },
+      include: { bookings: true }
+    });
 
     if (!ride) {
       return res.status(404).json({ message: "Ride not found" });
     }
-
-    // Get the driverId from the ride
-    const driverId = ride.driverId;
 
     // Check if the ride is already completed or canceled
     if (ride.rideStatus === "Completed" || ride.rideStatus === "Cancelled") {
@@ -305,35 +407,24 @@ exports.cancelRideByDriver = async (req, res) => {
       });
     }
 
-    // Set the status of all passengers to "Cancelled"
-    for (const passenger of ride.passengerId) {
-      passenger.status = "Cancelled";
-      const passengerToUpdate = await User.findOne({ uid: passenger.id });
-      if (passengerToUpdate) {
-        passengerToUpdate.ridesAsPassenger =
-          passengerToUpdate.ridesAsPassenger.filter(
-            (rideId) => rideId.toString() !== ride._id.toString()
-          );
-        await passengerToUpdate.save();
-      }
+    // Update all bookings for this ride
+    for (const booking of ride.bookings) {
+      await prisma.booking.update({
+        where: { id: booking.id },
+        data: { status: "cancelled" }
+      });
     }
 
-    // Update the ride status to "Cancelled"
-    ride.rideStatus = "Cancelled";
-    await ride.save();
-
-    // Remove the ride from the driver's ridesAsDriver array
-    const driver = await User.findOne({ uid: driverId });
-    if (driver) {
-      driver.ridesAsDriver = driver.ridesAsDriver.filter(
-        (rideId) => rideId.toString() !== ride._id.toString()
-      );
-      await driver.save();
-    }
+    // Update ride status
+    await prisma.ride.update({
+      where: { id: rideId },
+      data: { rideStatus: "Cancelled" }
+    });
 
     res.json({ message: "Ride cancelled successfully" });
   } catch (err) {
-    res.status(500).json({ message: "Internal server error", error: err });
+    console.error(err);
+    res.status(500).json({ message: "Internal server error", error: err.message });
   }
 };
 
@@ -343,32 +434,45 @@ exports.cancelRideByPassenger = async (req, res) => {
     const rideId = req.params.rideId;
     const passengerId = req.query.passengerId; // Get the passenger ID from the query parameter
 
-    // Find the ride by its ID
-    const ride = await Ride.findById(rideId);
+    // Find user by uid
+    const user = await prisma.user.findUnique({
+      where: { uid: passengerId }
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Find the ride
+    const ride = await prisma.ride.findUnique({
+      where: { id: rideId }
+    });
 
     if (!ride) {
       return res.status(404).json({ message: "Ride not found" });
     }
 
-    // Find the passenger in the ride's passengerId array
-    const passenger = ride.passengerId.find(
-      (passenger) => passenger.id === passengerId
-    );
+    // Find booking for this passenger and ride
+    const booking = await prisma.booking.findFirst({
+      where: {
+        rideId: rideId,
+        passengerId: user.id
+      }
+    });
 
-    if (!passenger) {
-      return res
-        .status(400)
-        .json({ message: "Passenger is not part of the ride" });
+    if (!booking) {
+      return res.status(400).json({ message: "Passenger is not part of the ride" });
     }
 
-    passenger.status = "Cancelled";
-
-    ride.selectedCapacity += 1;
-
-    await ride.save();
+    // Update booking status
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: { status: "cancelled" }
+    });
 
     res.json({ message: "Ride cancelled successfully" });
   } catch (err) {
-    res.status(500).json({ message: "Internal server error", error: err });
+    console.error(err);
+    res.status(500).json({ message: "Internal server error", error: err.message });
   }
 };

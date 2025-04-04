@@ -1,11 +1,12 @@
-const User = require("../models/user");
-const mongoose = require("mongoose");
+const prisma = require("../prisma/prisma-client");
 
 exports.checkUserExists = async (req, res) => {
   try {
     const { uid } = req.body;
 
-    const existingUser = await User.findOne({ $or: [{ uid }] });
+    const existingUser = await prisma.user.findUnique({
+      where: { uid }
+    });
 
     if (existingUser) {
       res.status(201).json({ exists: true });
@@ -20,18 +21,24 @@ exports.checkUserExists = async (req, res) => {
 
 exports.createUser = async (req, res) => {
   try {
-    const { uid, email, name, mobileNumber, vehicles, photoUrl } = req.body;
+    const { uid, email, name, mobileNumber, vehicles = [], photoUrl } = req.body;
 
-    const user = new User({
-      uid,
-      email,
-      name,
-      mobileNumber,
-      vehicles,
-      photoUrl,
+    const user = await prisma.user.create({
+      data: {
+        uid,
+        email,
+        name,
+        mobileNumber: mobileNumber.toString(),
+        photoUrl,
+        vehicles: {
+          create: vehicles.map(vehicle => ({
+            vehicleNumber: vehicle.vehicleNumber,
+            vehicleName: vehicle.vehicleName,
+            vehicleType: vehicle.vehicleType
+          }))
+        }
+      }
     });
-
-    await user.save();
 
     res.status(201).json({ message: "User details saved successfully" });
   } catch (error) {
@@ -44,7 +51,10 @@ exports.getVehicles = async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const user = await User.findOne({ uid: userId });
+    const user = await prisma.user.findUnique({
+      where: { uid: userId },
+      include: { vehicles: true }
+    });
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
@@ -52,7 +62,7 @@ exports.getVehicles = async (req, res) => {
 
     const vehicles = user.vehicles.map((vehicle) => {
       return {
-        vehicleId: vehicle._id.toString(),
+        vehicleId: vehicle.id,
         vehicleName: vehicle.vehicleName,
         vehicleNumber: vehicle.vehicleNumber,
         vehicleType: vehicle.vehicleType,
@@ -70,11 +80,13 @@ exports.updateUserDetails = async (req, res) => {
   const { uid, newName, newMobileNumber } = req.body;
 
   try {
-    const user = await User.findOneAndUpdate(
-      { uid },
-      { name: newName, mobileNumber: newMobileNumber },
-      { new: true }
-    );
+    const user = await prisma.user.update({
+      where: { uid },
+      data: { 
+        name: newName, 
+        mobileNumber: newMobileNumber.toString() 
+      }
+    });
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
@@ -93,14 +105,21 @@ exports.getUserDetails = async (req, res) => {
   try {
     const userId = req.params.userId;
 
-    const user = await User.findOne({ uid: userId });
+    const user = await prisma.user.findUnique({
+      where: { uid: userId },
+      include: {
+        ridesAsDriver: true,
+        ridesAsPassenger: true
+      }
+    });
+    
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
     res.json({
       name: user.name,
-      mobileNumber: user.mobileNumber.toString(),
+      mobileNumber: user.mobileNumber,
       email: user.email,
       ridesAsDriver: user.ridesAsDriver.length,
       ridesAsPassenger: user.ridesAsPassenger.length,
@@ -119,15 +138,24 @@ exports.addVehicle = async (req, res) => {
   }
 
   try {
-    const user = await User.findOne({ uid: userId });
+    const user = await prisma.user.findUnique({
+      where: { uid: userId }
+    });
+    
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    user.vehicles.push({ vehicleNumber, vehicleName, vehicleType });
-    await user.save();
+    const vehicle = await prisma.vehicle.create({
+      data: {
+        vehicleNumber,
+        vehicleName,
+        vehicleType,
+        ownerId: user.id
+      }
+    });
 
-    res.status(201).json({ message: "Vehicle added successfully", user });
+    res.status(201).json({ message: "Vehicle added successfully", vehicle });
   } catch (error) {
     console.error("Error:", error);
     res.status(500).json({ error: "An error occurred" });
@@ -144,27 +172,38 @@ exports.updateVehicle = async (req, res) => {
   }
 
   try {
-    const user = await User.findOne({ uid: userId });
+    // First check if user exists
+    const user = await prisma.user.findUnique({
+      where: { uid: userId }
+    });
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const vehicle = user.vehicles.find(
-      (vehicle) => vehicle._id.toString() === vehicleId
-    );
+    // Then check if vehicle belongs to user
+    const vehicle = await prisma.vehicle.findFirst({
+      where: {
+        id: vehicleId,
+        ownerId: user.id
+      }
+    });
 
     if (!vehicle) {
       return res.status(404).json({ error: "Vehicle not found for this user" });
     }
 
-    vehicle.vehicleNumber = vehicleNumber;
-    vehicle.vehicleName = vehicleName;
-    vehicle.vehicleType = vehicleType;
+    // Update the vehicle
+    const updatedVehicle = await prisma.vehicle.update({
+      where: { id: vehicleId },
+      data: {
+        vehicleNumber,
+        vehicleName,
+        vehicleType
+      }
+    });
 
-    await user.save();
-
-    res.json({ message: "Vehicle details updated successfully", vehicle });
+    res.json({ message: "Vehicle details updated successfully", vehicle: updatedVehicle });
   } catch (error) {
     console.error("Error:", error);
     res.status(500).json({ error: "An error occurred" });
@@ -176,22 +215,31 @@ exports.deleteVehicle = async (req, res) => {
   const vehicleId = req.params.vehicleId;
 
   try {
-    const user = await User.findOne({ uid: userId });
+    // First check if user exists
+    const user = await prisma.user.findUnique({
+      where: { uid: userId }
+    });
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const vehicleIndex = user.vehicles.find(
-      (vehicle) => vehicle._id.toString() === vehicleId
-    );
+    // Then check if vehicle belongs to user
+    const vehicle = await prisma.vehicle.findFirst({
+      where: {
+        id: vehicleId,
+        ownerId: user.id
+      }
+    });
 
-    if (vehicleIndex === -1) {
-      return res.status(404).json({ error: "Vehicle not found" });
+    if (!vehicle) {
+      return res.status(404).json({ error: "Vehicle not found for this user" });
     }
 
-    user.vehicles.splice(vehicleIndex, 1);
-    await user.save();
+    // Delete the vehicle
+    await prisma.vehicle.delete({
+      where: { id: vehicleId }
+    });
 
     res.json({ message: "Vehicle deleted successfully" });
   } catch (error) {

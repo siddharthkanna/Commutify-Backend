@@ -1,0 +1,104 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String    @id @default(uuid())
+  uid              String    @unique
+  name             String
+  email            String    @unique
+  role             Role?
+  mobileNumber     String
+  photoUrl         String?
+  vehicles         Vehicle[]
+  ridesAsDriver    Ride[]    @relation("DriverRides")
+  ridesAsPassenger Booking[] @relation("PassengerBookings")
+  driverBookings   Booking[] @relation("DriverBookings")
+}
+
+enum Role {
+  driver
+  passenger
+}
+
+model Vehicle {
+  id            String @id @default(uuid())
+  vehicleNumber String
+  vehicleName   String
+  vehicleType   String
+  owner         User   @relation(fields: [ownerId], references: [id])
+  ownerId       String
+  rides         Ride[]
+}
+
+model Ride {
+  id                   String     @id @default(uuid())
+  driver               User       @relation("DriverRides", fields: [driverId], references: [id])
+  driverId             String
+  vehicle              Vehicle    @relation(fields: [vehicleId], references: [id])
+  vehicleId            String
+  pickupLocations      Location[] @relation("RidePickupLocation")
+  destinationLocations Location[] @relation("RideDestinationLocation")
+  immediateMode        Boolean
+  scheduledMode        Boolean
+  selectedCapacity     Int
+  selectedDate         DateTime
+  selectedTime         String
+  price                Float
+  rideType             RideType
+  rideStatus           RideStatus @default(Upcoming)
+  bookings             Booking[]
+}
+
+model Location {
+  id                 String  @id @default(uuid())
+  latitude           Float
+  longitude          Float
+  placeName          String
+  ridePickup         Ride?   @relation("RidePickupLocation", fields: [ridePickupId], references: [id])
+  ridePickupId       String?
+  rideDestination    Ride?   @relation("RideDestinationLocation", fields: [rideDestinationId], references: [id])
+  rideDestinationId  String?
+}
+
+model Booking {
+  id          String        @id @default(uuid())
+  passenger   User          @relation("PassengerBookings", fields: [passengerId], references: [id])
+  passengerId String
+  driver      User          @relation("DriverBookings", fields: [driverId], references: [id])
+  driverId    String
+  ride        Ride          @relation(fields: [rideId], references: [id])
+  rideId      String
+  source      String
+  destination String
+  status      BookingStatus @default(ongoing)
+  createdAt   DateTime      @default(now())
+}
+
+enum RideType {
+  booked
+  published
+}
+
+enum RideStatus {
+  Upcoming
+  Completed
+  Cancelled
+}
+
+enum BookingStatus {
+  ongoing
+  confirmed
+  cancelled
+}
