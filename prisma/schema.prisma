@@ -13,77 +13,261 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// User model - core details about system users
 model User {
-  id               String    @id @default(uuid())
-  uid              String    @unique
-  name             String
-  email            String    @unique
-  role             Role?
-  mobileNumber     String
-  photoUrl         String?
+  id           String     @id @default(uuid())
+  uid          String     @unique // External UID (from Firebase, etc.)
+  email        String     @unique
+  name         String
+  mobileNumber String
+  roles        UserRole[] // Users can be both drivers and passengers
+  photoUrl     String?
+  bio          String? // Brief description about the user
+  rating       Float? // Average user rating
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  // Relationships
   vehicles         Vehicle[]
-  ridesAsDriver    Ride[]    @relation("DriverRides")
-  ridesAsPassenger Booking[] @relation("PassengerBookings")
-  driverBookings   Booking[] @relation("DriverBookings")
+  ridesAsDriver    Ride[]          @relation("DriverRides")
+  ridesAsPassenger Booking[]       @relation("PassengerBookings")
+  driverBookings   Booking[]       @relation("DriverBookings")
+  preferences      UserPreference?
+  givenRatings     Rating[]        @relation("RatingGiver")
+  receivedRatings  Rating[]        @relation("RatingReceiver")
+  sentMessages     Message[]       @relation("MessageSender")
+  receivedMessages Message[]       @relation("MessageReceiver")
 }
 
-enum Role {
-  driver
-  passenger
+enum UserRole {
+  DRIVER
+  PASSENGER
 }
 
+// User preferences for ride matching
+model UserPreference {
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  smoking        Boolean  @default(false)
+  pets           Boolean  @default(false)
+  music          Boolean  @default(true)
+  conversation   Boolean  @default(true)
+  airConditioned Boolean  @default(true)
+  maximumDetour  Int      @default(15) // Maximum detour in minutes
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+// Vehicle model - contains vehicle information
 model Vehicle {
-  id            String @id @default(uuid())
-  vehicleNumber String
-  vehicleName   String
-  vehicleType   String
-  owner         User   @relation(fields: [ownerId], references: [id])
-  ownerId       String
-  rides         Ride[]
+  id             String      @id @default(uuid())
+  vehicleNumber  String      @unique
+  vehicleName    String
+  vehicleType    VehicleType
+  color          String?
+  make           String?
+  model          String?
+  year           Int?
+  fuelType       FuelType?
+  fuelEfficiency Float? // km per liter or miles per gallon
+  capacity       Int         @default(4)
+  features       String[] // Array of vehicle features
+  photos         String[] // URLs to vehicle photos
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  isActive       Boolean     @default(true)
+
+  // Relationships
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerId String
+  rides   Ride[]
+
+  // Indexes for performance
+  @@index([ownerId])
+  @@index([isActive])
+  @@index([vehicleType])
 }
 
-model Ride {
-  id                   String     @id @default(uuid())
-  driver               User       @relation("DriverRides", fields: [driverId], references: [id])
-  driverId             String
-  vehicle              Vehicle    @relation(fields: [vehicleId], references: [id])
-  vehicleId            String
-  pickupLocations      Location[] @relation("RidePickupLocation")
-  destinationLocations Location[] @relation("RideDestinationLocation")
-  immediateMode        Boolean
-  scheduledMode        Boolean
-  selectedCapacity     Int
-  selectedDate         DateTime
-  selectedTime         String
-  price                Float
-  rideType             RideType
-  rideStatus           RideStatus @default(Upcoming)
-  bookings             Booking[]
+enum VehicleType {
+  SEDAN
+  SUV
+  HATCHBACK
+  MINIVAN
+  LUXURY
+  COMPACT
+  OTHER
 }
 
+enum FuelType {
+  PETROL
+  DIESEL
+  ELECTRIC
+  HYBRID
+  CNG
+  OTHER
+}
+
+// Location model - represents geographic locations
 model Location {
-  id                 String  @id @default(uuid())
-  latitude           Float
-  longitude          Float
-  placeName          String
-  ridePickup         Ride?   @relation("RidePickupLocation", fields: [ridePickupId], references: [id])
-  ridePickupId       String?
-  rideDestination    Ride?   @relation("RideDestinationLocation", fields: [rideDestinationId], references: [id])
-  rideDestinationId  String?
+  id        String   @id @default(uuid())
+  latitude  Float
+  longitude Float
+  placeName String
+  address   String?
+  city      String?
+  state     String?
+  country   String?
+  zipCode   String?
+  createdAt DateTime @default(now())
+
+  // Relationships for pickup locations
+  ridesAsPickup Ride[] @relation("RidePickupLocation")
+
+  // Relationships for destination locations
+  ridesAsDestination Ride[] @relation("RideDestinationLocation")
+
+  // Geospatial index (Note: Requires PostGIS extension)
+  @@index([latitude, longitude])
+  @@index([city, state])
 }
 
+// Ride model - represents a journey offered by a driver
+model Ride {
+  id                String      @id @default(uuid())
+  price             Float
+  pricePerKm        Float? // Optional price per kilometer
+  selectedCapacity  Int
+  immediateMode     Boolean     @default(false)
+  scheduledMode     Boolean     @default(true)
+  selectedDate      DateTime
+  selectedTime      DateTime // Changed from String to DateTime
+  estimatedDuration Int? // Estimated duration in minutes
+  estimatedDistance Float? // Estimated distance in kilometers
+  rideType          RideType    @default(published)
+  rideStatus        RideStatus  @default(Upcoming)
+  isRecurring       Boolean     @default(false)
+  recurringDays     DayOfWeek[] // Array of days for recurring rides
+  notes             String? // Additional ride information
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  // Relationships
+  driver        User       @relation("DriverRides", fields: [driverId], references: [id])
+  driverId      String
+  vehicle       Vehicle    @relation(fields: [vehicleId], references: [id])
+  vehicleId     String
+  pickup        Location   @relation("RidePickupLocation", fields: [pickupId], references: [id])
+  pickupId      String
+  destination   Location   @relation("RideDestinationLocation", fields: [destinationId], references: [id])
+  destinationId String
+  bookings      Booking[]
+  waypoints     Waypoint[]
+
+  // Indexes for frequently queried fields
+  @@index([driverId])
+  @@index([rideStatus])
+  @@index([selectedDate])
+  @@index([rideType])
+  @@index([isRecurring])
+}
+
+// Waypoints for rides with multiple stops
+model Waypoint {
+  id               String    @id @default(uuid())
+  rideId           String
+  ride             Ride      @relation(fields: [rideId], references: [id], onDelete: Cascade)
+  latitude         Float
+  longitude        Float
+  placeName        String
+  stopOrder        Int // Order of stops
+  estimatedArrival DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([rideId])
+  @@index([latitude, longitude])
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+// Booking model - represents a passenger booking a ride
 model Booking {
-  id          String        @id @default(uuid())
-  passenger   User          @relation("PassengerBookings", fields: [passengerId], references: [id])
+  id              String        @id @default(uuid())
+  passengerCount  Int           @default(1)
+  source          String
+  destination     String
+  status          BookingStatus @default(ongoing)
+  bookingDate     DateTime      @default(now())
+  paymentStatus   PaymentStatus @default(PENDING)
+  paymentAmount   Float?
+  paymentMethod   String?
+  specialRequests String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relationships
+  passenger   User    @relation("PassengerBookings", fields: [passengerId], references: [id])
   passengerId String
-  driver      User          @relation("DriverBookings", fields: [driverId], references: [id])
+  driver      User    @relation("DriverBookings", fields: [driverId], references: [id])
   driverId    String
-  ride        Ride          @relation(fields: [rideId], references: [id])
+  ride        Ride    @relation(fields: [rideId], references: [id])
   rideId      String
-  source      String
-  destination String
-  status      BookingStatus @default(ongoing)
-  createdAt   DateTime      @default(now())
+  rating      Rating?
+
+  // Composite index for passenger ride history queries
+  @@index([passengerId, status])
+  @@index([rideId, status])
+  @@index([driverId, status])
+  @@index([paymentStatus])
+}
+
+// Rating model for user feedback
+model Rating {
+  id        String   @id @default(uuid())
+  rating    Float // 1-5 star rating
+  comment   String?
+  createdAt DateTime @default(now())
+
+  // Relationships - who gave the rating
+  rater   User   @relation("RatingGiver", fields: [raterId], references: [id])
+  raterId String
+
+  // Relationships - who received the rating
+  rated   User   @relation("RatingReceiver", fields: [ratedId], references: [id])
+  ratedId String
+
+  // Relationship with booking
+  booking   Booking? @relation(fields: [bookingId], references: [id])
+  bookingId String?  @unique
+
+  @@index([raterId])
+  @@index([ratedId])
+}
+
+// Message model for in-app communication
+model Message {
+  id        String   @id @default(uuid())
+  content   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  // Relationships
+  sender     User   @relation("MessageSender", fields: [senderId], references: [id])
+  senderId   String
+  receiver   User   @relation("MessageReceiver", fields: [receiverId], references: [id])
+  receiverId String
+
+  @@index([senderId])
+  @@index([receiverId])
+  @@index([isRead])
 }
 
 enum RideType {
@@ -93,6 +277,7 @@ enum RideType {
 
 enum RideStatus {
   Upcoming
+  InProgress
   Completed
   Cancelled
 }
@@ -101,4 +286,12 @@ enum BookingStatus {
   ongoing
   confirmed
   cancelled
+  completed
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
 }

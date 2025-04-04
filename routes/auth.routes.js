@@ -8,6 +8,14 @@ router.post("/exists", UserController.checkUserExists);
 router.post("/updateUserDetails", UserController.updateUserDetails);
 router.get("/getUserDetails/:userId", UserController.getUserDetails);
 
+// User Preferences Routes
+router.get("/preferences/:userId", UserController.getUserPreferences);
+router.post("/preferences/update/:userId", UserController.updateUserPreferences);
+
+// Rating Routes
+router.post("/ratings/submit", UserController.submitRating);
+router.get("/ratings/:userId", UserController.getUserRatings);
+
 //Vehicle Routes
 router.get("/vehicles/:userId", UserController.getVehicles);
 router.post("/vehicles/addVehicle/:userId", UserController.addVehicle);
