@@ -1,4 +1,5 @@
 const prisma = require("../prisma/prisma-client");
+const { hydrateRide, hydrateUser, buildSuccessResponse, buildErrorResponse } = require("../utils/hydrators");
 
 exports.publishRide = async (req, res) => {
   try {
@@ -443,7 +444,7 @@ exports.fetchAvailableRides = async (req, res) => {
     if (userId) {
       user = await prisma.findUserByUid(userId);
       if (!user) {
-        return res.status(404).json({ message: "User not found" });
+        return res.status(404).json(buildErrorResponse("User not found"));
       }
     }
 
@@ -488,75 +489,39 @@ exports.fetchAvailableRides = async (req, res) => {
       ]
     });
 
-    const ridesData = availableRides.map(ride => {
-      // Calculate total booked capacity
-      const totalBookedSeats = ride.bookings.reduce((sum, booking) => sum + (booking.passengerCount || 1), 0);
-      
-      // Calculate remaining capacity
-      const remainingCapacity = ride.selectedCapacity - totalBookedSeats;
-      
-      // Only include rides with available capacity
-      if (remainingCapacity <= 0) {
-        return null;
-      }
+    // Use hydrators to format the response
+    const ridesData = availableRides
+      .map(ride => {
+        // Calculate total booked capacity
+        const totalBookedSeats = ride.bookings.reduce((sum, booking) => sum + (booking.passengerCount || 1), 0);
+        
+        // Calculate remaining capacity
+        const remainingCapacity = ride.selectedCapacity - totalBookedSeats;
+        
+        // Only include rides with available capacity
+        if (remainingCapacity <= 0) {
+          return null;
+        }
 
-      // Calculate driver rating
-      let driverRating = null;
-      if (ride.driver.receivedRatings && ride.driver.receivedRatings.length > 0) {
-        driverRating = ride.driver.receivedRatings.reduce((sum, rating) => sum + rating.rating, 0) / 
-                       ride.driver.receivedRatings.length;
-      }
-      
-      return {
-        rideId: ride.id,
-        driverName: ride.driver.name,
-        driverRating: driverRating || ride.driver.rating || 4.5, // Use calculated rating, user rating field, or default
-        photoUrl: ride.driver.photoUrl,
-        pickupLocation: {
-          latitude: ride.pickup.latitude,
-          longitude: ride.pickup.longitude,
-          placeName: ride.pickup.placeName,
-          address: ride.pickup.address,
-          city: ride.pickup.city,
-          state: ride.pickup.state
-        },
-        destinationLocation: {
-          latitude: ride.destination.latitude,
-          longitude: ride.destination.longitude,
-          placeName: ride.destination.placeName,
-          address: ride.destination.address,
-          city: ride.destination.city,
-          state: ride.destination.state
-        },
-        waypoints: ride.waypoints,
-        price: ride.price,
-        pricePerKm: ride.pricePerKm,
-        selectedDate: ride.selectedDate,
-        selectedTime: ride.selectedTime,
-        selectedCapacity: ride.selectedCapacity,
-        estimatedDuration: ride.estimatedDuration,
-        estimatedDistance: ride.estimatedDistance,
-        isRecurring: ride.isRecurring,
-        recurringDays: ride.recurringDays,
-        notes: ride.notes,
-        remainingCapacity: remainingCapacity,
-        vehicle: {
-          vehicleName: ride.vehicle.vehicleName,
-          vehicleNumber: ride.vehicle.vehicleNumber,
-          vehicleType: ride.vehicle.vehicleType,
-          make: ride.vehicle.make,
-          model: ride.vehicle.model,
-          color: ride.vehicle.color
-        },
-        rideStatus: ride.rideStatus,
-        createdAt: ride.createdAt
-      };
-    }).filter(Boolean); // Remove null entries
+        // Hydrate the ride with all its related data
+        const hydratedRide = hydrateRide(ride, {
+          includeDriver: true,
+          includeVehicle: true,
+          includeLocations: true,
+          includeBookings: false // We don't need the full booking details
+        });
+        
+        // Add the remaining capacity field which is specific to the available rides endpoint
+        hydratedRide.remainingCapacity = remainingCapacity;
+        
+        return hydratedRide;
+      })
+      .filter(Boolean); // Remove null entries
 
-    res.json(ridesData);
+    res.json(buildSuccessResponse(ridesData));
   } catch (err) {
     console.error(err);
-    res.status(502).json({ error: err.message });
+    res.status(502).json(buildErrorResponse("Error fetching available rides", err));
   }
 };
 

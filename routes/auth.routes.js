@@ -2,9 +2,14 @@ const express = require("express");
 const router = express.Router();
 const UserController = require("../controllers/user.controller");
 
-//User Routes
+// New optimized auth route for Supabase integration
+router.post("/auth", UserController.handleAuth);
+
+// Legacy routes maintained for backward compatibility
 router.post("/addUser", UserController.createUser);
 router.post("/exists", UserController.checkUserExists);
+
+// User management routes
 router.post("/updateUserDetails", UserController.updateUserDetails);
 router.get("/getUserDetails/:userId", UserController.getUserDetails);
 
@@ -16,7 +21,7 @@ router.post("/preferences/update/:userId", UserController.updateUserPreferences)
 router.post("/ratings/submit", UserController.submitRating);
 router.get("/ratings/:userId", UserController.getUserRatings);
 
-//Vehicle Routes
+// Vehicle Routes
 router.get("/vehicles/:userId", UserController.getVehicles);
 router.post("/vehicles/addVehicle/:userId", UserController.addVehicle);
 router.post(

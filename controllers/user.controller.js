@@ -1,37 +1,57 @@
 const prisma = require("../prisma/prisma-client");
+const { hydrateUser, hydrateVehicle, buildSuccessResponse, buildErrorResponse } = require("../utils/hydrators");
 
-exports.checkUserExists = async (req, res) => {
+/**
+ * Handles user authentication with Supabase
+ * Either finds existing user or creates a new one (upsert pattern)
+ */
+exports.handleAuth = async (req, res) => {
   try {
-    const { uid } = req.body;
+    const { 
+      uid, 
+      email, 
+      name, 
+      photoUrl = null, 
+      mobileNumber = null
+    } = req.body;
 
-    const existingUser = await prisma.user.findUnique({
-      where: { uid }
+    // Input validation
+    if (!uid || !email) {
+      return res.status(400).json(buildErrorResponse("User ID and email are required"));
+    }
+
+    // Try to find the user first
+    let user = await prisma.user.findUnique({
+      where: { uid },
+      include: {
+        preferences: true,
+        vehicles: {
+          where: { isActive: true }
+        }
+      }
     });
 
-    if (existingUser) {
-      res.status(201).json({ exists: true });
-    } else {
-      res.status(201).json({ exists: false });
+    // If user exists, return the user data
+    if (user) {
+      return res.status(200).json({
+        success: true,
+        isNewUser: false,
+        user: hydrateUser(user, {
+          includePreferences: true,
+          includeVehicles: true
+        })
+      });
     }
-  } catch (error) {
-    console.error("Error checking user existence:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-};
 
-exports.createUser = async (req, res) => {
-  try {
-    const { uid, email, name, mobileNumber, roles = ['PASSENGER'], vehicles = [], photoUrl, bio } = req.body;
-
-    const user = await prisma.user.create({
+    // If user doesn't exist, create a new one
+    user = await prisma.user.create({
       data: {
         uid,
         email,
-        name,
-        mobileNumber: mobileNumber.toString(),
+        name: name || email.split('@')[0], // Use email username as fallback
+        mobileNumber: mobileNumber ? mobileNumber.toString() : "",
         photoUrl,
-        bio,
-        roles,
+        roles: ['PASSENGER'], // Default role
         // Create default user preferences
         preferences: {
           create: {
@@ -42,19 +62,6 @@ exports.createUser = async (req, res) => {
             airConditioned: true,
             maximumDetour: 15
           }
-        },
-        vehicles: {
-          create: vehicles.map(vehicle => ({
-            vehicleNumber: vehicle.vehicleNumber,
-            vehicleName: vehicle.vehicleName,
-            vehicleType: vehicle.vehicleType || 'SEDAN', // Default to SEDAN if not specified
-            capacity: vehicle.capacity || 4,
-            color: vehicle.color,
-            make: vehicle.make,
-            model: vehicle.model,
-            year: vehicle.year,
-            fuelType: vehicle.fuelType
-          }))
         }
       },
       include: {
@@ -62,10 +69,153 @@ exports.createUser = async (req, res) => {
       }
     });
 
-    res.status(201).json({ message: "User details saved successfully", userId: user.id });
+    res.status(201).json({
+      success: true,
+      isNewUser: true,
+      user: hydrateUser(user, { includePreferences: true })
+    });
   } catch (error) {
-    console.error("Error saving user details:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error("Auth error:", error);
+    res.status(500).json(buildErrorResponse("Authentication error", error));
+  }
+};
+
+// Keep the previous function for backward compatibility
+exports.checkUserExists = async (req, res) => {
+  try {
+    const { uid } = req.body;
+
+    if (!uid) {
+      return res.status(400).json(buildErrorResponse("User ID is required"));
+    }
+
+    const existingUser = await prisma.user.findUnique({
+      where: { uid }
+    });
+
+    res.status(200).json(buildSuccessResponse({ exists: !!existingUser }));
+  } catch (error) {
+    console.error("Error checking user existence:", error);
+    res.status(500).json(buildErrorResponse("Internal Server Error", error));
+  }
+};
+
+// This function is now handled by handleAuth but kept for backward compatibility
+exports.createUser = async (req, res) => {
+  try {
+    return exports.handleAuth(req, res);
+  } catch (error) {
+    console.error("Error in user creation:", error);
+    res.status(500).json(buildErrorResponse("User creation failed", error));
+  }
+};
+
+exports.updateUserDetails = async (req, res) => {
+  try {
+    const { uid } = req.body;
+    
+    // Input validation
+    if (!uid) {
+      return res.status(400).json(buildErrorResponse("User ID is required"));
+    }
+
+    // Extract updatable fields
+    const {
+      name,
+      mobileNumber,
+      bio,
+      roles,
+      photoUrl
+    } = req.body;
+
+    // Build update data object with only provided fields
+    const updateData = {};
+    if (name) updateData.name = name;
+    if (mobileNumber) updateData.mobileNumber = mobileNumber.toString();
+    if (bio !== undefined) updateData.bio = bio;
+    if (roles) updateData.roles = roles;
+    if (photoUrl) updateData.photoUrl = photoUrl;
+
+    // Only perform update if there's something to update
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json(buildErrorResponse("No fields to update were provided"));
+    }
+
+    // Perform the update
+    const user = await prisma.user.update({
+      where: { uid },
+      data: updateData,
+      include: {
+        preferences: true,
+        vehicles: {
+          where: { isActive: true }
+        }
+      }
+    });
+
+    res.json(buildSuccessResponse(
+      { user: hydrateUser(user, { includePreferences: true, includeVehicles: true }) },
+      "User details updated successfully"
+    ));
+  } catch (err) {
+    console.error("Error updating user:", err);
+    res.status(500).json(buildErrorResponse("User update failed", err));
+  }
+};
+
+exports.getUserDetails = async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    // Input validation
+    if (!userId) {
+      return res.status(400).json(buildErrorResponse("User ID is required"));
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { uid: userId },
+      include: {
+        ridesAsDriver: {
+          select: { id: true }
+        },
+        ridesAsPassenger: {
+          select: { id: true }
+        },
+        preferences: true,
+        vehicles: {
+          where: { isActive: true }
+        },
+        receivedRatings: {
+          select: {
+            rating: true,
+            rater: {
+              select: {
+                name: true,
+                photoUrl: true
+              }
+            }
+          }
+        }
+      }
+    });
+    
+    if (!user) {
+      return res.status(404).json(buildErrorResponse("User not found"));
+    }
+
+    // Use the hydrator with all options enabled
+    const userResponse = hydrateUser(user, {
+      includePreferences: true,
+      includeVehicles: true,
+      includeRideStats: true,
+      includeRatings: true,
+      includeRatingDetails: true
+    });
+
+    res.json(buildSuccessResponse({ user: userResponse }));
+  } catch (error) {
+    console.error("Error fetching user details:", error);
+    res.status(500).json(buildErrorResponse("Failed to retrieve user details", error));
   }
 };
 
@@ -79,114 +229,15 @@ exports.getVehicles = async (req, res) => {
     });
 
     if (!user) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json(buildErrorResponse("User not found"));
     }
 
-    const vehicles = user.vehicles.map((vehicle) => {
-      return {
-        vehicleId: vehicle.id,
-        vehicleName: vehicle.vehicleName,
-        vehicleNumber: vehicle.vehicleNumber,
-        vehicleType: vehicle.vehicleType,
-        color: vehicle.color,
-        make: vehicle.make,
-        model: vehicle.model,
-        year: vehicle.year,
-        fuelType: vehicle.fuelType,
-        fuelEfficiency: vehicle.fuelEfficiency,
-        capacity: vehicle.capacity,
-        features: vehicle.features,
-        photos: vehicle.photos,
-        isActive: vehicle.isActive
-      };
-    });
+    const vehicles = user.vehicles.map(vehicle => hydrateVehicle(vehicle));
 
-    res.status(200).json({ vehicles });
+    res.status(200).json(buildSuccessResponse({ vehicles }));
   } catch (error) {
-    console.error("Error fetching user details:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
-};
-
-exports.updateUserDetails = async (req, res) => {
-  const { uid, newName, newMobileNumber, bio, roles, photoUrl } = req.body;
-
-  try {
-    const updateData = {};
-    
-    if (newName) updateData.name = newName;
-    if (newMobileNumber) updateData.mobileNumber = newMobileNumber.toString();
-    if (bio !== undefined) updateData.bio = bio;
-    if (roles) updateData.roles = roles;
-    if (photoUrl) updateData.photoUrl = photoUrl;
-
-    const user = await prisma.user.update({
-      where: { uid },
-      data: updateData
-    });
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    res.json({ message: "Details updated successfully", user });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "An error occurred" });
-  }
-};
-
-exports.getUserDetails = async (req, res) => {
-  try {
-    const userId = req.params.userId;
-
-    const user = await prisma.user.findUnique({
-      where: { uid: userId },
-      include: {
-        ridesAsDriver: true,
-        ridesAsPassenger: true,
-        preferences: true,
-        vehicles: true,
-        receivedRatings: {
-          include: {
-            rater: true
-          }
-        }
-      }
-    });
-    
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    // Calculate average rating
-    let avgRating = null;
-    if (user.receivedRatings.length > 0) {
-      avgRating = user.receivedRatings.reduce((sum, rating) => sum + rating.rating, 0) / user.receivedRatings.length;
-    }
-
-    res.json({
-      name: user.name,
-      mobileNumber: user.mobileNumber,
-      email: user.email,
-      bio: user.bio,
-      photoUrl: user.photoUrl,
-      roles: user.roles,
-      rating: avgRating,
-      ridesAsDriver: user.ridesAsDriver.length,
-      ridesAsPassenger: user.ridesAsPassenger.length,
-      preferences: user.preferences,
-      vehicles: user.vehicles.map(v => ({
-        id: v.id,
-        vehicleNumber: v.vehicleNumber,
-        vehicleName: v.vehicleName,
-        vehicleType: v.vehicleType,
-        isActive: v.isActive,
-        capacity: v.capacity
-      }))
-    });
-  } catch (error) {
-    res.status(500).json({ error });
+    console.error("Error fetching vehicles:", error);
+    res.status(500).json(buildErrorResponse("Failed to retrieve vehicles", error));
   }
 };
 
@@ -207,7 +258,7 @@ exports.addVehicle = async (req, res) => {
   } = req.body;
 
   if (!vehicleNumber || !vehicleName || !vehicleType) {
-    return res.status(400).json({ error: "Vehicle number, name, and type are required" });
+    return res.status(400).json(buildErrorResponse("Vehicle number, name, and type are required"));
   }
 
   try {
@@ -216,7 +267,7 @@ exports.addVehicle = async (req, res) => {
     });
     
     if (!user) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json(buildErrorResponse("User not found"));
     }
 
     const vehicle = await prisma.vehicle.create({
@@ -237,10 +288,13 @@ exports.addVehicle = async (req, res) => {
       }
     });
 
-    res.status(201).json({ message: "Vehicle added successfully", vehicle });
+    res.status(201).json(buildSuccessResponse(
+      { vehicle: hydrateVehicle(vehicle) }, 
+      "Vehicle added successfully"
+    ));
   } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({ error: "An error occurred" });
+    console.error("Error adding vehicle:", error);
+    res.status(500).json(buildErrorResponse("Failed to add vehicle", error));
   }
 };
 
@@ -264,7 +318,7 @@ exports.updateVehicle = async (req, res) => {
   } = req.body;
 
   if (!vehicleNumber || !vehicleName || !vehicleType) {
-    return res.status(400).json({ error: "Vehicle number, name, and type are required" });
+    return res.status(400).json(buildErrorResponse("Vehicle number, name, and type are required"));
   }
 
   try {
@@ -274,7 +328,7 @@ exports.updateVehicle = async (req, res) => {
     });
 
     if (!user) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json(buildErrorResponse("User not found"));
     }
 
     // Then check if vehicle belongs to user
@@ -286,7 +340,7 @@ exports.updateVehicle = async (req, res) => {
     });
 
     if (!vehicle) {
-      return res.status(404).json({ error: "Vehicle not found for this user" });
+      return res.status(404).json(buildErrorResponse("Vehicle not found for this user"));
     }
 
     // Update the vehicle
@@ -309,10 +363,13 @@ exports.updateVehicle = async (req, res) => {
       }
     });
 
-    res.json({ message: "Vehicle details updated successfully", vehicle: updatedVehicle });
+    res.json(buildSuccessResponse(
+      { vehicle: hydrateVehicle(updatedVehicle) },
+      "Vehicle details updated successfully"
+    ));
   } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({ error: "An error occurred" });
+    console.error("Error updating vehicle:", error);
+    res.status(500).json(buildErrorResponse("Failed to update vehicle", error));
   }
 };
 
@@ -327,7 +384,7 @@ exports.deleteVehicle = async (req, res) => {
     });
 
     if (!user) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json(buildErrorResponse("User not found"));
     }
 
     // Then check if vehicle belongs to user
@@ -339,7 +396,7 @@ exports.deleteVehicle = async (req, res) => {
     });
 
     if (!vehicle) {
-      return res.status(404).json({ error: "Vehicle not found for this user" });
+      return res.status(404).json(buildErrorResponse("Vehicle not found for this user"));
     }
 
     // Delete the vehicle
@@ -347,10 +404,10 @@ exports.deleteVehicle = async (req, res) => {
       where: { id: vehicleId }
     });
 
-    res.json({ message: "Vehicle deleted successfully" });
+    res.json(buildSuccessResponse(null, "Vehicle deleted successfully"));
   } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({ error: "An error occurred" });
+    console.error("Error deleting vehicle:", error);
+    res.status(500).json(buildErrorResponse("Failed to delete vehicle", error));
   }
 };
 
@@ -365,7 +422,7 @@ exports.getUserPreferences = async (req, res) => {
     });
     
     if (!user) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json(buildErrorResponse("User not found"));
     }
     
     if (!user.preferences) {
@@ -382,13 +439,13 @@ exports.getUserPreferences = async (req, res) => {
         }
       });
       
-      return res.json({ preferences });
+      return res.json(buildSuccessResponse({ preferences }));
     }
     
-    res.json({ preferences: user.preferences });
+    res.json(buildSuccessResponse({ preferences: user.preferences }));
   } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({ error: "An error occurred" });
+    console.error("Error fetching preferences:", error);
+    res.status(500).json(buildErrorResponse("Failed to retrieve preferences", error));
   }
 };
 
@@ -411,7 +468,7 @@ exports.updateUserPreferences = async (req, res) => {
     });
     
     if (!user) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json(buildErrorResponse("User not found"));
     }
     
     let preferences;
@@ -445,10 +502,13 @@ exports.updateUserPreferences = async (req, res) => {
       });
     }
     
-    res.json({ message: "Preferences updated successfully", preferences });
+    res.json(buildSuccessResponse(
+      { preferences },
+      "Preferences updated successfully"
+    ));
   } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({ error: "An error occurred" });
+    console.error("Error updating preferences:", error);
+    res.status(500).json(buildErrorResponse("Failed to update preferences", error));
   }
 };
 
@@ -458,7 +518,7 @@ exports.submitRating = async (req, res) => {
     const { raterUid, ratedUid, bookingId, rating, comment } = req.body;
     
     if (!raterUid || !ratedUid || !rating || rating < 1 || rating > 5) {
-      return res.status(400).json({ error: "Valid rater, rated user and rating (1-5) are required" });
+      return res.status(400).json(buildErrorResponse("Valid rater, rated user and rating (1-5) are required"));
     }
     
     // Find users
@@ -466,7 +526,7 @@ exports.submitRating = async (req, res) => {
     const rated = await prisma.user.findUnique({ where: { uid: ratedUid } });
     
     if (!rater || !rated) {
-      return res.status(404).json({ error: "One or both users not found" });
+      return res.status(404).json(buildErrorResponse("One or both users not found"));
     }
     
     // Check if booking exists if bookingId is provided
@@ -474,7 +534,7 @@ exports.submitRating = async (req, res) => {
     if (bookingId) {
       booking = await prisma.booking.findUnique({ where: { id: bookingId } });
       if (!booking) {
-        return res.status(404).json({ error: "Booking not found" });
+        return res.status(404).json(buildErrorResponse("Booking not found"));
       }
     }
     
@@ -501,10 +561,13 @@ exports.submitRating = async (req, res) => {
       data: { rating: avgRating }
     });
     
-    res.status(201).json({ message: "Rating submitted successfully", rating: newRating });
+    res.status(201).json(buildSuccessResponse(
+      { rating: newRating },
+      "Rating submitted successfully"
+    ));
   } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({ error: "An error occurred" });
+    console.error("Error submitting rating:", error);
+    res.status(500).json(buildErrorResponse("Failed to submit rating", error));
   }
 };
 
@@ -518,7 +581,7 @@ exports.getUserRatings = async (req, res) => {
     });
     
     if (!user) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json(buildErrorResponse("User not found"));
     }
     
     const ratings = await prisma.rating.findMany({
@@ -535,9 +598,9 @@ exports.getUserRatings = async (req, res) => {
       orderBy: { createdAt: 'desc' }
     });
     
-    res.json({ ratings });
+    res.json(buildSuccessResponse({ ratings }));
   } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({ error: "An error occurred" });
+    console.error("Error fetching ratings:", error);
+    res.status(500).json(buildErrorResponse("Failed to retrieve ratings", error));
   }
 };
