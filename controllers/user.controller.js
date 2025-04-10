@@ -3,16 +3,13 @@ const { hydrateUser, hydrateVehicle, buildSuccessResponse, buildErrorResponse } 
 
 /**
  * Handles user authentication with Supabase
- * Either finds existing user or creates a new one (upsert pattern)
+ * Only checks if user exists, doesn't create a new user
  */
 exports.handleAuth = async (req, res) => {
   try {
     const { 
       uid, 
-      email, 
-      name, 
-      photoUrl = null, 
-      mobileNumber = null
+      email
     } = req.body;
 
     // Input validation
@@ -43,40 +40,149 @@ exports.handleAuth = async (req, res) => {
       });
     }
 
-    // If user doesn't exist, create a new one
-    user = await prisma.user.create({
-      data: {
-        uid,
-        email,
-        name: name || email.split('@')[0], // Use email username as fallback
-        mobileNumber: mobileNumber ? mobileNumber.toString() : "",
-        photoUrl,
-        roles: ['PASSENGER'], // Default role
-        // Create default user preferences
-        preferences: {
-          create: {
-            smoking: false,
-            pets: false,
-            music: true,
-            conversation: true,
-            airConditioned: true,
-            maximumDetour: 15
-          }
-        }
-      },
-      include: {
-        preferences: true
-      }
-    });
-
-    res.status(201).json({
+    // If user doesn't exist, just return isNewUser: true
+    res.status(200).json({
       success: true,
       isNewUser: true,
-      user: hydrateUser(user, { includePreferences: true })
+      message: "User needs to be created"
     });
   } catch (error) {
     console.error("Auth error:", error);
     res.status(500).json(buildErrorResponse("Authentication error", error));
+  }
+};
+
+/**
+ * Creates a new user with given details
+ */
+exports.createNewUser = async (req, res) => {
+  try {
+    const { 
+      uid, 
+      email, 
+      name, 
+      photoUrl = null, 
+      mobileNumber = null,
+      role = 'PASSENGER', // Default role if not provided
+      vehicle = null // Optional vehicle details
+    } = req.body;
+
+    // Input validation
+    if (!uid || !email) {
+      return res.status(400).json(buildErrorResponse("User ID and email are required"));
+    }
+
+    // Check if user already exists
+    const existingUser = await prisma.user.findUnique({
+      where: { uid }
+    });
+
+    if (existingUser) {
+      return res.status(409).json(buildErrorResponse("User already exists"));
+    }
+
+    // Create user data object
+    const userData = {
+      uid,
+      email,
+      name: name || email.split('@')[0], // Use email username as fallback
+      mobileNumber: mobileNumber ? mobileNumber.toString() : "",
+      photoUrl,
+      roles: [role], // Use provided role or default to PASSENGER
+      // Create default user preferences
+      preferences: {
+        create: {
+          smoking: false,
+          pets: false,
+          music: true,
+          conversation: true,
+          airConditioned: true,
+          maximumDetour: 15
+        }
+      }
+    };
+    
+    // Add vehicle if provided
+    let createdVehicle = null;
+    
+    // Create the user
+    const user = await prisma.user.create({
+      data: userData,
+      include: {
+        preferences: true
+      }
+    });
+    
+    // If vehicle details are provided, create the vehicle for the user
+    if (vehicle && typeof vehicle === 'object') {
+      // Extract vehicle details
+      const { 
+        vehicleNumber, 
+        vehicleName, 
+        vehicleType, 
+        capacity = 4, 
+        color = null, 
+        make = null, 
+        model = null, 
+        year = null, 
+        fuelType = null, 
+        fuelEfficiency = null,
+        features = []
+      } = vehicle;
+      
+      // Basic validation for required vehicle fields
+      if (vehicleNumber && vehicleName && vehicleType) {
+        // Check if a vehicle with this number already exists
+        const existingVehicle = await prisma.vehicle.findUnique({
+          where: { vehicleNumber }
+        });
+
+        if (existingVehicle) {
+          console.log("Found existing vehicle with the same number during user creation:", existingVehicle);
+          // Don't fail user creation, just don't create the vehicle
+          responseData = {
+            success: true,
+            user: hydrateUser(user, { includePreferences: true }),
+            warning: "Vehicle with this number already exists and was not created"
+          };
+          return res.status(201).json(responseData);
+        }
+        
+        createdVehicle = await prisma.vehicle.create({
+          data: {
+            vehicleNumber,
+            vehicleName,
+            vehicleType,
+            capacity,
+            color,
+            make,
+            model,
+            year,
+            fuelType,
+            fuelEfficiency,
+            features,
+            photos: [],
+            ownerId: user.id,
+            isActive: true
+          }
+        });
+      }
+    }
+
+    // Return the user with vehicle if created
+    const responseData = {
+      success: true,
+      user: hydrateUser(user, { includePreferences: true })
+    };
+    
+    if (createdVehicle) {
+      responseData.vehicle = hydrateVehicle(createdVehicle);
+    }
+
+    res.status(201).json(responseData);
+  } catch (error) {
+    console.error("User creation error:", error);
+    res.status(500).json(buildErrorResponse("User creation error", error));
   }
 };
 
@@ -100,10 +206,10 @@ exports.checkUserExists = async (req, res) => {
   }
 };
 
-// This function is now handled by handleAuth but kept for backward compatibility
+// This function is now handled by createNewUser but kept for backward compatibility
 exports.createUser = async (req, res) => {
   try {
-    return exports.handleAuth(req, res);
+    return exports.createNewUser(req, res);
   } catch (error) {
     console.error("Error in user creation:", error);
     res.status(500).json(buildErrorResponse("User creation failed", error));
@@ -256,7 +362,7 @@ exports.addVehicle = async (req, res) => {
     fuelEfficiency,
     features
   } = req.body;
-
+  console.log("vehicle details ", req.body);
   if (!vehicleNumber || !vehicleName || !vehicleType) {
     return res.status(400).json(buildErrorResponse("Vehicle number, name, and type are required"));
   }
@@ -268,6 +374,16 @@ exports.addVehicle = async (req, res) => {
     
     if (!user) {
       return res.status(404).json(buildErrorResponse("User not found"));
+    }
+
+    // Check if a vehicle with this number already exists
+    const existingVehicle = await prisma.vehicle.findUnique({
+      where: { vehicleNumber: vehicleNumber }
+    });
+
+    if (existingVehicle) {
+      console.log("Found existing vehicle with the same number:", existingVehicle);
+      return res.status(400).json(buildErrorResponse("A vehicle with this number already exists"));
     }
 
     const vehicle = await prisma.vehicle.create({
@@ -287,6 +403,8 @@ exports.addVehicle = async (req, res) => {
         ownerId: user.id
       }
     });
+
+    console.log("vehicle created ", vehicle);
 
     res.status(201).json(buildSuccessResponse(
       { vehicle: hydrateVehicle(vehicle) }, 
@@ -341,6 +459,18 @@ exports.updateVehicle = async (req, res) => {
 
     if (!vehicle) {
       return res.status(404).json(buildErrorResponse("Vehicle not found for this user"));
+    }
+
+    // If vehicle number is changed, check if it conflicts with an existing vehicle
+    if (vehicleNumber !== vehicle.vehicleNumber) {
+      const existingVehicle = await prisma.vehicle.findUnique({
+        where: { vehicleNumber }
+      });
+
+      if (existingVehicle && existingVehicle.id !== vehicleId) {
+        console.log("Found existing vehicle with the same number during update:", existingVehicle);
+        return res.status(400).json(buildErrorResponse("A different vehicle with this number already exists"));
+      }
     }
 
     // Update the vehicle

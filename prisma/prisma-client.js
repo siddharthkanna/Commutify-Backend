@@ -18,13 +18,17 @@ async function prismaExec(operation) {
 
 // User utility functions
 prisma.findUserByUid = async (uid) => {
-  return prismaExec(() => prisma.user.findUnique({ where: { uid } }));
+  return prismaExec(() => prisma.user.findUnique({ 
+    where: { 
+      uid: uid  // Explicitly use the uid parameter
+    } 
+  }));
 };
 
 prisma.findUserWithVehicles = async (uid) => {
   return prismaExec(() => 
     prisma.user.findUnique({
-      where: { uid },
+      where: { uid: uid },
       include: { 
         vehicles: true,
         preferences: true
@@ -36,7 +40,7 @@ prisma.findUserWithVehicles = async (uid) => {
 prisma.findUserWithDetails = async (uid) => {
   return prismaExec(() =>
     prisma.user.findUnique({
-      where: { uid },
+      where: { uid: uid },
       include: {
         vehicles: true,
         preferences: true,
@@ -54,7 +58,7 @@ prisma.findUserWithDetails = async (uid) => {
 prisma.getRideWithDetails = async (id) => {
   return prismaExec(() => 
     prisma.ride.findUnique({
-      where: { id },
+      where: { id: id },
       include: {
         driver: true,
         vehicle: true,
@@ -77,7 +81,7 @@ prisma.getRideWithDetails = async (id) => {
 prisma.getPublishedRidesByDriver = async (driverId) => {
   return prismaExec(() => 
     prisma.ride.findMany({
-      where: { driverId },
+      where: { driverId: driverId },
       include: {
         pickup: true,
         destination: true,
