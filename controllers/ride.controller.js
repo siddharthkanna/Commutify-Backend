@@ -1,157 +1,9 @@
 const prisma = require("../prisma/prisma-client");
 const { hydrateRide, hydrateUser, buildSuccessResponse, buildErrorResponse } = require("../utils/hydrators");
-
-// Helper function to check if a point is between two other points
-const isPointBetween = (point, start, end, tolerance = 0.01) => {
-  // Basic bounding box check
-  const minLat = Math.min(start.latitude, end.latitude) - tolerance;
-  const maxLat = Math.max(start.latitude, end.latitude) + tolerance;
-  const minLng = Math.min(start.longitude, end.longitude) - tolerance;
-  const maxLng = Math.max(start.longitude, end.longitude) + tolerance;
-  
-  return (
-    point.latitude >= minLat && 
-    point.latitude <= maxLat && 
-    point.longitude >= minLng && 
-    point.longitude <= maxLng
-  );
-};
-
-// Helper function to check if two points are approximately the same location
-const isApproximatelySameLocation = (point1, point2, tolerance = 0.01) => {
-  return (
-    Math.abs(point1.latitude - point2.latitude) < tolerance &&
-    Math.abs(point1.longitude - point2.longitude) < tolerance
-  );
-};
-
-// Helper function to parse location data from request
-const parseLocationData = (locationString) => {
-  if (!locationString) return null;
-  
-  try {
-    // If it's already an object, return it
-    if (typeof locationString === 'object') {
-      return locationString;
-    }
-    
-    // Try to parse as JSON in case it's a stringified object
-    try {
-      const parsed = JSON.parse(locationString);
-      return parsed;
-    } catch (jsonError) {
-      // If it's not valid JSON, assume it's a place name string
-      // Create a simple location object with just the place name
-      return {
-        placeName: locationString
-      };
-    }
-  } catch (e) {
-    console.error("Error processing location data:", e);
-    return null;
-  }
-};
-
-// Helper function to check if two locations match by name or coordinates
-const doLocationsMatch = (location1, location2, tolerance = 0.01) => {
-  // If we have coordinates for both, check if they're approximately the same
-  if (location1.latitude && location1.longitude && 
-      location2.latitude && location2.longitude) {
-    return (
-      Math.abs(location1.latitude - location2.latitude) < tolerance &&
-      Math.abs(location1.longitude - location2.longitude) < tolerance
-    );
-  }
-  
-  // If we have names for both, check if they're similar
-  if (location1.placeName && location2.placeName) {
-    // Simple case-insensitive substring check
-    const name1 = location1.placeName.toLowerCase();
-    const name2 = location2.placeName.toLowerCase();
-    
-    return name1.includes(name2) || name2.includes(name1);
-  }
-  
-  // If one has a name and one has coordinates, no match
-  return false;
-};
-
-// Helper function to check if a ride's route matches user's requirements
-const isRideRouteMatch = (ride, userPickup, userDestination) => {
-  // If no location filters were provided, all rides match
-  if (!userPickup || !userDestination) {
-    return true;
-  }
-  
-  // Check if the ride's destination matches user's destination
-  const destinationMatches = doLocationsMatch(ride.destination, userDestination);
-  
-  if (destinationMatches) {
-    return true;
-  }
-  
-  // If we only have place names and no coordinates, 
-  // we can't do proper route matching, so just check names
-  if ((!userPickup.latitude || !userPickup.longitude) ||
-      (!userDestination.latitude || !userDestination.longitude)) {
-    
-    // Check if pickup location matches
-    const pickupMatches = userPickup.placeName && 
-      ride.pickup.placeName && 
-      doLocationsMatch(ride.pickup, userPickup);
-    
-    // If either pickup or destination matches, consider it a match
-    if (pickupMatches) {
-      return true;
-    }
-    
-    // Check waypoints by name
-    if (ride.waypoints && ride.waypoints.length > 0) {
-      return ride.waypoints.some(waypoint => {
-        return (userDestination.placeName && 
-                waypoint.placeName &&
-                doLocationsMatch({ placeName: waypoint.placeName }, userDestination));
-      });
-    }
-    
-    return false;
-  }
-  
-  // If we have coordinates, continue with the existing route matching logic
-  const ridePickup = { 
-    latitude: ride.pickup.latitude, 
-    longitude: ride.pickup.longitude 
-  };
-  
-  const rideDestination = { 
-    latitude: ride.destination.latitude, 
-    longitude: ride.destination.longitude 
-  };
-  
-  // Check if user's pickup is between ride's pickup and destination
-  const pickupIsBetween = isPointBetween(userPickup, ridePickup, rideDestination);
-  
-  // Check if user's destination is between ride's pickup and destination
-  const destinationIsBetween = isPointBetween(userDestination, ridePickup, rideDestination);
-  
-  // Check waypoints as well
-  let waypointsMatch = false;
-  if (ride.waypoints && ride.waypoints.length > 0) {
-    waypointsMatch = ride.waypoints.some(waypoint => {
-      const waypointPoint = { 
-        latitude: waypoint.latitude, 
-        longitude: waypoint.longitude 
-      };
-      
-      // Either waypoint near user destination or user pickup near waypoint
-      return isApproximatelySameLocation(waypointPoint, userDestination) || 
-             isPointBetween(userPickup, ridePickup, waypointPoint) || 
-             isPointBetween(userDestination, waypointPoint, rideDestination);
-    });
-  }
-  
-  return pickupIsBetween || destinationIsBetween || waypointsMatch;
-};
+const { 
+  parseLocationData, 
+  isRideRouteMatch 
+} = require("../utils/ride.helpers");
 
 exports.publishRide = async (req, res) => {
   try {
@@ -287,9 +139,9 @@ exports.bookRide = async (req, res) => {
   try {
     console.log("Starting bookRide with request:", { params: req.params, body: req.body });
 
-    const rideId = req.params.rideId || req.body.rideId;  // Get rideId from URL path or body
-    const userId = req.body.userId || req.body.passengerId;  // Support both new and old parameter names
-    const { passengerCount = 1, specialRequests } = req.body;  // Get data from request body
+    const rideId = req.params.rideId || req.body.rideId; 
+    const userId = req.body.userId || req.body.passengerId;  
+    const { passengerCount = 1, specialRequests } = req.body;  
 
     console.log("Extracted request data:", { rideId, userId, passengerCount, specialRequests });
 
@@ -369,7 +221,6 @@ exports.bookRide = async (req, res) => {
     if (ride.pricePerKm && ride.estimatedDistance) {
       paymentAmount = ride.pricePerKm * ride.estimatedDistance;
     }
-    console.log("Calculated payment amount:", { basePrice: ride.price, final: paymentAmount });
 
     // Create a new booking
     const booking = await prisma.booking.create({
@@ -414,7 +265,6 @@ exports.bookRide = async (req, res) => {
 
 exports.fetchPublishedRides = async (req, res) => {
   try {
-    // For legacy routes, the userId might be in the query params instead of route params
     const userId = req.params.userId || req.query.userId;
     console.log("Fetching published rides for userId:", userId);
 
@@ -520,7 +370,6 @@ exports.fetchPublishedRides = async (req, res) => {
 
 exports.fetchBookedRides = async (req, res) => {
   try {
-    // For legacy routes, the userId might be in the query params instead of route params
     const userId = req.params.userId || req.query.userId;
     console.log("Fetching booked rides for userId:", userId);
 
@@ -631,7 +480,6 @@ exports.fetchBookedRides = async (req, res) => {
 exports.fetchAvailableRides = async (req, res) => {
   console.log("Fetching available rides");
   try {
-    // Extract filter parameters from query string (optional)
     const { 
       userId, 
       maxPrice, 
@@ -657,23 +505,19 @@ exports.fetchAvailableRides = async (req, res) => {
     }
     console.log("User found:", user);
     
-    // Build dynamic query with filters
     const whereClause = {
       rideStatus: { not: "Completed" },
       //selectedDate: { gte: new Date() }
     };
 
-    // Only exclude rides from this user if a userId was provided
     if (user) {
       whereClause.NOT = { driverId: user.id };
     }
     
-    // Apply price filter if provided
     if (maxPrice) {
       whereClause.price = { lte: parseFloat(maxPrice) };
     }
 
-    // Find rides with filters
     const availableRides = await prisma.ride.findMany({
       where: whereClause,
       include: {
@@ -698,11 +542,9 @@ exports.fetchAvailableRides = async (req, res) => {
       ]
     });
 
-    // Prepare location objects using coordinates if available, otherwise use text
     let userPickup = null;
     let userDestination = null;
 
-    // First try to use coordinates if available
     if (pickupLat && pickupLng) {
       userPickup = {
         latitude: parseFloat(pickupLat),
@@ -730,36 +572,30 @@ exports.fetchAvailableRides = async (req, res) => {
     // Use hydrators to format the response
     const ridesData = availableRides
       .map(ride => {
-        // Calculate total booked capacity
         const totalBookedSeats = ride.bookings.reduce((sum, booking) => sum + (booking.passengerCount || 1), 0);
         
-        // Calculate remaining capacity
         const remainingCapacity = ride.selectedCapacity - totalBookedSeats;
         
-        // Only include rides with available capacity
         if (remainingCapacity <= 0) {
           return null;
         }
         
-        // Check if ride matches location filters (if provided)
         if (!isRideRouteMatch(ride, userPickup, userDestination)) {
           return null;
         }
 
-        // Hydrate the ride with all its related data
         const hydratedRide = hydrateRide(ride, {
           includeDriver: true,
           includeVehicle: true,
           includeLocations: true,
-          includeBookings: false // We don't need the full booking details
+          includeBookings: false
         });
         
-        // Add the remaining capacity field which is specific to the available rides endpoint
         hydratedRide.remainingCapacity = remainingCapacity;
         
         return hydratedRide;
       })
-      .filter(Boolean); // Remove null entries
+      .filter(Boolean); 
 
     res.json(buildSuccessResponse(ridesData));
   } catch (err) {
@@ -772,16 +608,14 @@ exports.fetchAvailableRides = async (req, res) => {
 exports.completeRide = async (req, res) => {
   try {
     const rideId = req.params.rideId;
-    const { userId } = req.body;  // Get user ID from body
+    const { userId } = req.body;  
 
-    // Verify user exists and is authorized (should be the driver)
     if (userId) {
       const user = await prisma.user.findUnique({ where: { uid: userId } });
       if (!user) {
         return res.status(404).json({ message: "User not found" });
       }
       
-      // Find the ride
       const ride = await prisma.ride.findUnique({
         where: { id: rideId },
         include: { bookings: true }
@@ -791,12 +625,10 @@ exports.completeRide = async (req, res) => {
         return res.status(404).json({ message: "Ride not found" });
       }
       
-      // Verify user is the driver
       if (ride.driverId !== user.id) {
         return res.status(403).json({ message: "Only the driver can complete this ride" });
       }
       
-      // Update ride status
       await prisma.ride.update({
         where: { id: rideId },
         data: { 
@@ -805,7 +637,6 @@ exports.completeRide = async (req, res) => {
         }
       });
 
-      // Update all bookings for this ride
       for (const booking of ride.bookings) {
         await prisma.booking.update({
           where: { id: booking.id },
@@ -827,21 +658,18 @@ exports.completeRide = async (req, res) => {
   }
 };
 
-// Simplified and unified cancel ride function for both drivers and passengers
 exports.cancelRide = async (req, res) => {
   console.log("Cancelling ride");
   try {
     const rideId = req.params.rideId;
-    const { userId, role } = req.body; // Get user ID and optional role
+    const { userId, role } = req.body; 
     console.log("Ride ID:", rideId);
     console.log("User ID:", userId);
     console.log("Role:", role);
-    // Input validation
     if (!rideId || !userId) {
       return res.status(400).json({ message: "Ride ID and User ID are required" });
     }
 
-    // Find user
     const user = await prisma.user.findUnique({
       where: { uid: userId }
     });
@@ -850,7 +678,6 @@ exports.cancelRide = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Find the ride with necessary relationships
     const ride = await prisma.ride.findUnique({
       where: { id: rideId },
       include: { 
@@ -863,7 +690,6 @@ exports.cancelRide = async (req, res) => {
       return res.status(404).json({ message: "Ride not found" });
     }
 
-    // Check if the ride is already completed or canceled
     if (ride.rideStatus === "Completed" || ride.rideStatus === "Cancelled") {
       return res.status(400).json({
         message: "Cannot cancel a completed or already canceled ride"
@@ -887,9 +713,7 @@ exports.cancelRide = async (req, res) => {
       return res.status(403).json({ message: "You are not a passenger on this ride" });
     }
     
-    // Handle cancellation based on user's actual relationship to the ride
     if (isDriver) {
-      // Driver is cancelling - update all bookings
       for (const booking of ride.bookings) {
         await prisma.booking.update({
           where: { id: booking.id },
@@ -901,7 +725,6 @@ exports.cancelRide = async (req, res) => {
         });
       }
       
-      // Update ride status
       await prisma.ride.update({
         where: { id: rideId },
         data: { 
@@ -916,7 +739,6 @@ exports.cancelRide = async (req, res) => {
         cancelledBy: "driver"
       });
     } else if (isPassenger) {
-      // Passenger is cancelling - find their booking
       const booking = await prisma.booking.findFirst({
         where: {
           rideId: rideId,
@@ -924,7 +746,6 @@ exports.cancelRide = async (req, res) => {
         }
       });
 
-      // Update booking status
       await prisma.booking.update({
         where: { id: booking.id },
         data: { 
@@ -934,7 +755,6 @@ exports.cancelRide = async (req, res) => {
         }
       });
 
-      // Check if all bookings are cancelled to update ride status
       const remainingBookings = await prisma.booking.findMany({
         where: {
           rideId: rideId,
@@ -958,7 +778,6 @@ exports.cancelRide = async (req, res) => {
         cancelledBy: "passenger"
       });
     } else {
-      // User has no relationship to this ride
       return res.status(403).json({ 
         message: "You don't have permission to cancel this ride" 
       });
@@ -973,7 +792,6 @@ exports.cancelRide = async (req, res) => {
   }
 };
 
-// Add new controller methods for messaging
 exports.sendMessage = async (req, res) => {
   try {
     const { senderUid, receiverUid, content } = req.body;
@@ -1006,12 +824,10 @@ exports.sendMessage = async (req, res) => {
   }
 };
 
-// Get messages between two users
 exports.getMessages = async (req, res) => {
   try {
-    const { userId, otherUserId } = req.params; // Using consistent parameter names
+    const { userId, otherUserId } = req.params; 
     
-    // Find users
     const user = await prisma.user.findUnique({ where: { uid: userId } });
     const otherUser = await prisma.user.findUnique({ where: { uid: otherUserId } });
     
@@ -1048,7 +864,6 @@ exports.getMessages = async (req, res) => {
       }
     });
     
-    // Mark messages from other user as read
     await prisma.message.updateMany({
       where: {
         senderId: otherUser.id,
@@ -1067,31 +882,21 @@ exports.getMessages = async (req, res) => {
   }
 };
 
-/**
- * Get comprehensive ride statistics for a user
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- */
+
 exports.getRideStats = async (req, res) => {
   try {
     const userId = req.params.userId;
     
-    console.log("Fetching ride statistics for userId:", userId);
-
     if (!userId) {
-      console.log("No userId provided in request parameters");
       return res.status(400).json(buildErrorResponse("User ID is required as a route parameter"));
     }
 
-    // Find the user by uid
     const user = await prisma.findUserByUid(userId);
     
     if (!user) {
-      console.log("User not found for userId:", userId);
       return res.status(404).json(buildErrorResponse("User not found"));
     }
 
-    // Get all rides where the user is a driver
     const publishedRides = await prisma.ride.findMany({
       where: { driverId: user.id },
       include: {
@@ -1101,7 +906,6 @@ exports.getRideStats = async (req, res) => {
       }
     });
 
-    // Get all bookings where the user is a passenger
     const bookedRides = await prisma.booking.findMany({
       where: { passengerId: user.id },
       include: {
@@ -1114,7 +918,6 @@ exports.getRideStats = async (req, res) => {
       }
     });
 
-    // Calculate driver statistics
     const driverStats = {
       totalRidesPublished: publishedRides.length,
       totalRidesCompleted: publishedRides.filter(ride => ride.rideStatus === "Completed").length,
@@ -1123,7 +926,6 @@ exports.getRideStats = async (req, res) => {
       totalRidesInProgress: publishedRides.filter(ride => ride.rideStatus === "InProgress").length,
       totalPassengersServed: publishedRides.reduce((sum, ride) => sum + ride.bookings.length, 0),
       totalEarnings: publishedRides.reduce((sum, ride) => {
-        // Sum up all booking payment amounts for completed rides
         if (ride.rideStatus === "Completed") {
           return sum + ride.bookings.reduce((bookingSum, booking) => 
             booking.paymentStatus === "COMPLETED" ? bookingSum + (booking.paymentAmount || 0) : bookingSum, 
@@ -1133,7 +935,6 @@ exports.getRideStats = async (req, res) => {
       }, 0)
     };
 
-    // Calculate passenger statistics
     const passengerStats = {
       totalRidesBooked: bookedRides.length,
       totalRidesCompleted: bookedRides.filter(booking => booking.status === "completed").length,
@@ -1144,16 +945,13 @@ exports.getRideStats = async (req, res) => {
       0)
     };
 
-    // Calculate aggregate ride statistics
     const totalDistance = [
       ...publishedRides.map(ride => ride.estimatedDistance || 0),
       ...bookedRides.map(booking => booking.ride?.estimatedDistance || 0)
     ].reduce((sum, distance) => sum + distance, 0);
 
-    // Calculate most frequent destinations (top 5)
     const destinationCounts = {};
     
-    // Count destinations for driver
     publishedRides.forEach(ride => {
       if (ride.destination && ride.destination.city) {
         const city = ride.destination.city;
@@ -1161,7 +959,6 @@ exports.getRideStats = async (req, res) => {
       }
     });
     
-    // Count destinations for passenger
     bookedRides.forEach(booking => {
       if (booking.ride?.destination?.city) {
         const city = booking.ride.destination.city;
@@ -1169,13 +966,11 @@ exports.getRideStats = async (req, res) => {
       }
     });
     
-    // Sort destinations by frequency and take top 5
     const topDestinations = Object.entries(destinationCounts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
       .map(([city, count]) => ({ city, count }));
 
-    // Calculate rides by month over the past year
     const now = new Date();
     const oneYearAgo = new Date();
     oneYearAgo.setFullYear(now.getFullYear() - 1);
@@ -1198,7 +993,6 @@ exports.getRideStats = async (req, res) => {
       }
     });
     
-    // Get month names
     const monthNames = [];
     for (let i = 0; i < 12; i++) {
       const d = new Date();
@@ -1206,7 +1000,6 @@ exports.getRideStats = async (req, res) => {
       monthNames.push(d.toLocaleString('default', { month: 'short' }));
     }
     
-    // Create the final statistics object
     const stats = {
       userId: user.uid,
       userName: user.name,
@@ -1214,9 +1007,9 @@ exports.getRideStats = async (req, res) => {
       asPassenger: passengerStats,
       aggregate: {
         totalRides: driverStats.totalRidesPublished + passengerStats.totalRidesBooked,
-        totalDistance: Math.round(totalDistance), // Round to nearest whole number
+        totalDistance: Math.round(totalDistance),
         totalRidesCompleted: driverStats.totalRidesCompleted + passengerStats.totalRidesCompleted,
-        netFinancial: Math.round((driverStats.totalEarnings - passengerStats.totalSpent) * 100) / 100 // Format to 2 decimal places
+        netFinancial: Math.round((driverStats.totalEarnings - passengerStats.totalSpent) * 100) / 100
       },
       topDestinations,
       rideActivity: {
@@ -1227,7 +1020,6 @@ exports.getRideStats = async (req, res) => {
 
     res.json(buildSuccessResponse(stats, "Ride statistics retrieved successfully"));
   } catch (err) {
-    console.error("Error getting ride statistics:", err);
     res.status(500).json(buildErrorResponse("Failed to retrieve ride statistics", err));
   }
 };
