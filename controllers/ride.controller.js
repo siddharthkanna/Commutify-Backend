@@ -1,9 +1,21 @@
 const prisma = require("../prisma/prisma-client");
 const { hydrateRide, hydrateUser, buildSuccessResponse, buildErrorResponse } = require("../utils/hydrators");
+const { cacheData, getCachedData, invalidateCache } = require("../utils/redis");
 const { 
   parseLocationData, 
   isRideRouteMatch 
 } = require("../utils/ride.helpers");
+
+// Cache durations
+const CACHE_DURATIONS = {
+  RIDE_STATS: 300,  // 5 minutes
+  RIDE_DETAILS: 300 // 5 minutes
+};
+
+// Cache key generators
+const generateCacheKey = (type, id, ...args) => {
+  return `${type}:${id}:${args.join(':')}`;
+};
 
 exports.publishRide = async (req, res) => {
   try {
@@ -646,7 +658,20 @@ exports.completeRide = async (req, res) => {
             updatedAt: new Date()
           }
         });
+
+        // Invalidate passenger's ride stats cache
+        const passengerId = booking.passengerId;
+        const passengerUser = await prisma.user.findUnique({ 
+          where: { id: passengerId },
+          select: { uid: true }
+        });
+        if (passengerUser) {
+          await invalidateCache(generateCacheKey('user', passengerUser.uid, 'ride-stats'));
+        }
       }
+
+      // Invalidate driver's ride stats cache
+      await invalidateCache(generateCacheKey('user', userId, 'ride-stats'));
 
       res.json({ message: "Ride completed successfully" });
     } else {
@@ -696,11 +721,6 @@ exports.cancelRide = async (req, res) => {
       });
     }
 
-    // // Check if the ride is in the past
-    // if (new Date(ride.selectedDate) < new Date()) {
-    //   return res.status(400).json({ message: "Cannot cancel past rides" });
-    // }
-
     const isDriver = ride.driverId === user.id;
     const isPassenger = ride.bookings.some(booking => booking.passengerId === user.id);
     
@@ -714,6 +734,7 @@ exports.cancelRide = async (req, res) => {
     }
     
     if (isDriver) {
+      // If driver cancels, cancel all bookings and the ride
       for (const booking of ride.bookings) {
         await prisma.booking.update({
           where: { id: booking.id },
@@ -739,6 +760,7 @@ exports.cancelRide = async (req, res) => {
         cancelledBy: "driver"
       });
     } else if (isPassenger) {
+      // If passenger cancels, only cancel their booking
       const booking = await prisma.booking.findFirst({
         where: {
           rideId: rideId,
@@ -755,6 +777,7 @@ exports.cancelRide = async (req, res) => {
         }
       });
 
+      // Update ride type back to "published" if it was the only booking
       const remainingBookings = await prisma.booking.findMany({
         where: {
           rideId: rideId,
@@ -766,7 +789,8 @@ exports.cancelRide = async (req, res) => {
         await prisma.ride.update({
           where: { id: rideId },
           data: {
-            rideStatus: "Cancelled",
+            rideType: "published", // Change back to published instead of cancelling
+            rideStatus: "Upcoming", // Keep the ride status as Upcoming
             updatedAt: new Date()
           }
         });
@@ -889,6 +913,14 @@ exports.getRideStats = async (req, res) => {
     
     if (!userId) {
       return res.status(400).json(buildErrorResponse("User ID is required as a route parameter"));
+    }
+
+    // Try to get stats from cache first
+    const cacheKey = generateCacheKey('user', userId, 'ride-stats');
+    const cachedStats = await getCachedData(cacheKey);
+    
+    if (cachedStats) {
+      return res.json(buildSuccessResponse(cachedStats, "Ride statistics retrieved from cache"));
     }
 
     const user = await prisma.findUserByUid(userId);
@@ -1017,6 +1049,9 @@ exports.getRideStats = async (req, res) => {
         data: ridesByMonth
       }
     };
+
+    // Cache the stats
+    await cacheData(cacheKey, stats, CACHE_DURATIONS.RIDE_STATS);
 
     res.json(buildSuccessResponse(stats, "Ride statistics retrieved successfully"));
   } catch (err) {

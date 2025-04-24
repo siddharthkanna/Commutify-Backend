@@ -1,5 +1,18 @@
 const prisma = require("../prisma/prisma-client");
 const { hydrateUser, hydrateVehicle, buildSuccessResponse, buildErrorResponse } = require("../utils/hydrators");
+const { cacheData, getCachedData, invalidateCache } = require("../utils/redis");
+
+const CACHE_DURATIONS = {
+  USER_DETAILS: 3600,        // 1 hour
+  USER_PREFERENCES: 7200,    // 2 hours
+  VEHICLE_DETAILS: 86400,    // 24 hours
+  RIDE_DETAILS: 300,         // 5 minutes
+  RATINGS: 1800             // 30 minutes
+};
+
+const generateCacheKey = (type, id, ...args) => {
+  return `${type}:${id}:${args.join(':')}`;
+};
 
 /**
  * Handles user authentication with Supabase
@@ -259,6 +272,9 @@ exports.updateUserDetails = async (req, res) => {
       }
     });
 
+    // Invalidate the user cache
+    await invalidateCache(`user:${uid}`);
+
     res.json(buildSuccessResponse(
       { user: hydrateUser(user, { includePreferences: true, includeVehicles: true }) },
       "User details updated successfully"
@@ -272,12 +288,17 @@ exports.updateUserDetails = async (req, res) => {
 exports.getUserDetails = async (req, res) => {
   try {
     const userId = req.params.userId;
+    const cacheKey = generateCacheKey('user', userId, 'details');
+    
+    const cachedUser = await getCachedData(cacheKey);
+    if (cachedUser) return res.json(buildSuccessResponse({ user: cachedUser }));
 
     // Input validation
     if (!userId) {
       return res.status(400).json(buildErrorResponse("User ID is required"));
     }
 
+    // If not in cache, get from database
     const user = await prisma.user.findUnique({
       where: { uid: userId },
       include: {
@@ -318,6 +339,9 @@ exports.getUserDetails = async (req, res) => {
       includeRatingDetails: true
     });
 
+    // Cache the hydrated user data
+    await cacheData(cacheKey, userResponse, CACHE_DURATIONS.USER_DETAILS);
+
     res.json(buildSuccessResponse({ user: userResponse }));
   } catch (error) {
     console.error("Error fetching user details:", error);
@@ -328,6 +352,13 @@ exports.getUserDetails = async (req, res) => {
 exports.getVehicles = async (req, res) => {
   try {
     const { userId } = req.params;
+    const cacheKey = generateCacheKey('user', userId, 'vehicles');
+
+    // Try to get vehicles from cache first
+    const cachedVehicles = await getCachedData(cacheKey);
+    if (cachedVehicles) {
+      return res.status(200).json(buildSuccessResponse({ vehicles: cachedVehicles }));
+    }
 
     const user = await prisma.user.findUnique({
       where: { uid: userId },
@@ -339,6 +370,9 @@ exports.getVehicles = async (req, res) => {
     }
 
     const vehicles = user.vehicles.map(vehicle => hydrateVehicle(vehicle));
+
+    // Cache the hydrated vehicles data
+    await cacheData(cacheKey, vehicles, CACHE_DURATIONS.VEHICLE_DETAILS);
 
     res.status(200).json(buildSuccessResponse({ vehicles }));
   } catch (error) {
@@ -403,6 +437,11 @@ exports.addVehicle = async (req, res) => {
         ownerId: user.id
       }
     });
+
+    // Invalidate the vehicles cache for this user
+    await invalidateCache(generateCacheKey('user', userId, 'vehicles'));
+    // Also invalidate the user details cache as it includes vehicles
+    await invalidateCache(generateCacheKey('user', userId, 'details'));
 
     console.log("vehicle created ", vehicle);
 
@@ -493,6 +532,11 @@ exports.updateVehicle = async (req, res) => {
       }
     });
 
+    // Invalidate the vehicles cache for this user
+    await invalidateCache(generateCacheKey('user', userId, 'vehicles'));
+    // Also invalidate the user details cache as it includes vehicles
+    await invalidateCache(generateCacheKey('user', userId, 'details'));
+
     res.json(buildSuccessResponse(
       { vehicle: hydrateVehicle(updatedVehicle) },
       "Vehicle details updated successfully"
@@ -533,6 +577,11 @@ exports.deleteVehicle = async (req, res) => {
     await prisma.vehicle.delete({
       where: { id: vehicleId }
     });
+
+    // Invalidate the vehicles cache for this user
+    await invalidateCache(generateCacheKey('user', userId, 'vehicles'));
+    // Also invalidate the user details cache as it includes vehicles
+    await invalidateCache(generateCacheKey('user', userId, 'details'));
 
     res.json(buildSuccessResponse(null, "Vehicle deleted successfully"));
   } catch (error) {
@@ -631,6 +680,9 @@ exports.updateUserPreferences = async (req, res) => {
         data: updateData
       });
     }
+
+    // Invalidate the user cache when preferences are updated
+    await invalidateCache(`user:${userId}`);
     
     res.json(buildSuccessResponse(
       { preferences },
