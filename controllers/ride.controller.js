@@ -9,7 +9,9 @@ const {
 // Cache durations
 const CACHE_DURATIONS = {
   RIDE_STATS: 300,  // 5 minutes
-  RIDE_DETAILS: 300 // 5 minutes
+  RIDE_DETAILS: 60, // 1 minute
+  BOOKED_RIDES: 60,  // 1 minute
+  PUBLISHED_RIDES: 60 // 1 minute
 };
 
 // Cache key generators
@@ -265,6 +267,11 @@ exports.bookRide = async (req, res) => {
     }
 
     console.log("Booking completed successfully:", { bookingId: booking.id });
+
+    // After successful booking, invalidate relevant caches
+    await invalidateCache(generateCacheKey('user', userId, 'booked-rides'));
+    await invalidateCache(generateCacheKey('user', ride.driver.uid, 'published-rides'));
+
     res.json({ 
       message: "Ride booked successfully",
       bookingId: booking.id
@@ -283,6 +290,15 @@ exports.fetchPublishedRides = async (req, res) => {
     if (!userId) {
       console.log("No userId provided in request parameters");
       return res.status(400).json({ message: "User ID is required as a route parameter or query parameter" });
+    }
+
+    // Try to get from cache first
+    const cacheKey = generateCacheKey('user', userId, 'published-rides');
+    const cachedRides = await getCachedData(cacheKey);
+    
+    if (cachedRides) {
+      console.log("Returning published rides from cache");
+      return res.json(cachedRides);
     }
 
     // Find the user by uid
@@ -371,8 +387,10 @@ exports.fetchPublishedRides = async (req, res) => {
       };
     });
 
-    console.log("Sending back ridesData with length:", ridesData.length);
+    // Cache the rides data
+    await cacheData(cacheKey, ridesData, CACHE_DURATIONS.PUBLISHED_RIDES);
 
+    console.log("Sending back ridesData with length:", ridesData.length);
     res.json(ridesData);
   } catch (err) {
     console.error("Error fetching published rides:", err);
@@ -388,6 +406,15 @@ exports.fetchBookedRides = async (req, res) => {
     if (!userId) {
       console.log("No userId provided in request parameters");
       return res.status(400).json({ message: "User ID is required as a route parameter or query parameter" });
+    }
+
+    // Try to get from cache first
+    const cacheKey = generateCacheKey('user', userId, 'booked-rides');
+    const cachedRides = await getCachedData(cacheKey);
+    
+    if (cachedRides) {
+      console.log("Returning booked rides from cache");
+      return res.json(cachedRides);
     }
 
     // Find the user by uid
@@ -480,8 +507,11 @@ exports.fetchBookedRides = async (req, res) => {
         rating: booking.rating
       };
     });
-    console.log("Sending back ridesData with length:", ridesData);
 
+    // Cache the rides data
+    await cacheData(cacheKey, ridesData, CACHE_DURATIONS.BOOKED_RIDES);
+
+    console.log("Sending back ridesData with length:", ridesData.length);
     res.json(ridesData);
   } catch (err) {
     console.error("Error fetching booked rides:", err);
@@ -754,6 +784,19 @@ exports.cancelRide = async (req, res) => {
         }
       });
       
+      // After successful cancellation, invalidate relevant caches
+      await invalidateCache(generateCacheKey('user', userId, 'published-rides'));
+      // Invalidate cache for all passengers of this ride
+      for (const booking of ride.bookings) {
+        const passenger = await prisma.user.findUnique({
+          where: { id: booking.passengerId },
+          select: { uid: true }
+        });
+        if (passenger) {
+          await invalidateCache(generateCacheKey('user', passenger.uid, 'booked-rides'));
+        }
+      }
+      
       return res.json({ 
         success: true,
         message: "Ride cancelled successfully",
@@ -789,13 +832,17 @@ exports.cancelRide = async (req, res) => {
         await prisma.ride.update({
           where: { id: rideId },
           data: {
-            rideType: "published", // Change back to published instead of cancelling
-            rideStatus: "Upcoming", // Keep the ride status as Upcoming
+            rideType: "published", 
+            rideStatus: "Upcoming", 
             updatedAt: new Date()
           }
         });
       }
       
+      // After successful cancellation, invalidate relevant caches
+      await invalidateCache(generateCacheKey('user', userId, 'booked-rides'));
+      await invalidateCache(generateCacheKey('user', ride.driver.uid, 'published-rides'));
+
       return res.json({ 
         success: true,
         message: "Booking cancelled successfully",
