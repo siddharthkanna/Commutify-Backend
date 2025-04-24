@@ -1,7 +1,7 @@
 {
   "scripts": {
     "test": "echo \"Skipping tests...\"",
-    "start": "nodemon server.js",
+    "start": "node server.js",
     "start-server": "node server.js",
     "prisma:generate": "npx prisma generate",
     "prisma:push": "npx prisma db push",
