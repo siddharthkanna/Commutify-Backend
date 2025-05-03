@@ -2,7 +2,6 @@ const prisma = require("../prisma/prisma-client");
 const { hydrateRide, hydrateUser, buildSuccessResponse, buildErrorResponse } = require("../utils/hydrators");
 const { cacheData, getCachedData, invalidateCache } = require("../utils/redis");
 const { 
-  parseLocationData, 
   isRideRouteMatch 
 } = require("../utils/ride.helpers");
 
@@ -456,8 +455,6 @@ exports.fetchAvailableRides = async (req, res) => {
     const userId = req.user.id;
     const {
       maxPrice,
-      pickupLocation,
-      destinationLocation,
       pickupLat,
       pickupLng,
       destinationLat,
@@ -514,21 +511,15 @@ exports.fetchAvailableRides = async (req, res) => {
     if (pickupLat && pickupLng) {
       userPickup = {
         latitude: parseFloat(pickupLat),
-        longitude: parseFloat(pickupLng),
-        placeName: pickupLocation || "User pickup"
+        longitude: parseFloat(pickupLng)
       };
-    } else if (pickupLocation) {
-      userPickup = parseLocationData(pickupLocation);
     }
 
     if (destinationLat && destinationLng) {
       userDestination = {
         latitude: parseFloat(destinationLat),
-        longitude: parseFloat(destinationLng),
-        placeName: destinationLocation || "User destination"
+        longitude: parseFloat(destinationLng)
       };
-    } else if (destinationLocation) {
-      userDestination = parseLocationData(destinationLocation);
     }
 
     const ridesData = availableRides

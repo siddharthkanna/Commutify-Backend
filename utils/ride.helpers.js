@@ -1,6 +1,6 @@
-// Helper function to check if a point is between two other points
+const turf = require('@turf/turf');
+
 const isPointBetween = (point, start, end, tolerance = 0.01) => {
-  // Basic bounding box check
   const minLat = Math.min(start.latitude, end.latitude) - tolerance;
   const maxLat = Math.max(start.latitude, end.latitude) + tolerance;
   const minLng = Math.min(start.longitude, end.longitude) - tolerance;
@@ -12,6 +12,17 @@ const isPointBetween = (point, start, end, tolerance = 0.01) => {
     point.longitude >= minLng && 
     point.longitude <= maxLng
   );
+};
+
+const isWithinDistance = (point1, point2, maxDistanceKm = 2) => {
+  const from = turf.point([point1.longitude, point1.latitude]);
+  const to = turf.point([point2.longitude, point2.latitude]);
+  const distance = turf.distance(from, to);
+  return distance <= maxDistanceKm;
+};
+
+const isSameLocation = (point1, point2) => {
+  return isWithinDistance(point1, point2, 0.05);
 };
 
 const isRideRouteMatch = (ride, userPickup, userDestination) => {
@@ -33,38 +44,24 @@ const isRideRouteMatch = (ride, userPickup, userDestination) => {
     longitude: ride.destination.longitude 
   };
 
-  // Check direct route match
-  if (isPointBetween(userPickup, ridePickup, rideDestination) &&
-      isPointBetween(userDestination, ridePickup, rideDestination)) {
-    return true;
-  }
+  // Check if pickup point is along the route
+  const isPickupValid = isPointBetween(userPickup, ridePickup, rideDestination);
+  
+  // Check if destination is:
+  // 1. Along the route, OR
+  // 2. Within 1km of the ride destination, OR
+  // 3. Essentially the same location as the ride destination
+  const isDestinationValid = 
+    isPointBetween(userDestination, ridePickup, rideDestination) ||
+    isWithinDistance(userDestination, rideDestination) ||
+    isSameLocation(userDestination, rideDestination);
 
-  // // Check waypoint routes only if we have waypoints with coordinates
-  // if (ride.waypoints?.length > 0) {
-  //   // Create an array of route segments including waypoints
-  //   const routePoints = [ridePickup, ...ride.waypoints
-  //     .filter(w => w.latitude && w.longitude)
-  //     .map(w => ({
-  //       latitude: w.latitude,
-  //       longitude: w.longitude
-  //     })), rideDestination];
-
-  //   // Check each consecutive pair of points in the route
-  //   for (let i = 0; i < routePoints.length - 1; i++) {
-  //     const segmentStart = routePoints[i];
-  //     const segmentEnd = routePoints[i + 1];
-      
-  //     if (isPointBetween(userPickup, segmentStart, segmentEnd) &&
-  //         isPointBetween(userDestination, segmentStart, segmentEnd)) {
-  //       return true;
-  //     }
-  //   }
-  // }
-
-  return false;
+  return isPickupValid && isDestinationValid;
 };
 
 module.exports = {
   isPointBetween,
-  isRideRouteMatch
+  isRideRouteMatch,
+  isWithinDistance,
+  isSameLocation
 }; 
