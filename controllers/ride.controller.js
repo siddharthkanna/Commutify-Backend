@@ -6,7 +6,6 @@ const {
   isRideRouteMatch 
 } = require("../utils/ride.helpers");
 
-// Cache durations
 const CACHE_DURATIONS = {
   RIDE_STATS: 300,  // 5 minutes
   RIDE_DETAILS: 60, // 1 minute
@@ -14,15 +13,14 @@ const CACHE_DURATIONS = {
   PUBLISHED_RIDES: 60 // 1 minute
 };
 
-// Cache key generators
 const generateCacheKey = (type, id, ...args) => {
   return `${type}:${id}:${args.join(':')}`;
 };
 
 exports.publishRide = async (req, res) => {
   try {
+    const driverId = req.user.id;
     const {
-      driverId,
       pickupLocation,
       destinationLocation,
       waypoints,
@@ -41,14 +39,15 @@ exports.publishRide = async (req, res) => {
       notes
     } = req.body;
 
-    // Find the user by uid
-    const user = await prisma.findUserWithVehicles(driverId);
+    const user = await prisma.user.findUnique({
+      where: { uid: driverId },
+      include: { vehicles: true }
+    });
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(404).json({ message: "User not found ffffhbfhfgh" });
     }
 
-    // Find the vehicle
     const vehicle = await prisma.vehicle.findFirst({
       where: {
         vehicleNumber: selectedVehicle.vehicleNumber,
@@ -60,7 +59,6 @@ exports.publishRide = async (req, res) => {
       return res.status(404).json({ message: "Vehicle not found" });
     }
 
-    // Prepare ride data
     const rideData = {
       driverId: user.id,
       vehicleId: vehicle.id,
@@ -68,7 +66,7 @@ exports.publishRide = async (req, res) => {
       scheduledMode: scheduledMode || true,
       selectedCapacity,
       selectedDate: new Date(selectedDate),
-      selectedTime: new Date(selectedTime), // Now using DateTime instead of String
+      selectedTime: new Date(selectedTime),
       price,
       pricePerKm,
       estimatedDuration,
@@ -79,7 +77,6 @@ exports.publishRide = async (req, res) => {
       rideType: "published"
     };
 
-    // Prepare pickup location data
     const pickupData = {
       latitude: pickupLocation[0].latitude,
       longitude: pickupLocation[0].longitude,
@@ -91,7 +88,6 @@ exports.publishRide = async (req, res) => {
       zipCode: pickupLocation[0].zipCode
     };
 
-    // Prepare destination location data
     const destinationData = {
       latitude: destinationLocation[0].latitude,
       longitude: destinationLocation[0].longitude,
@@ -103,15 +99,11 @@ exports.publishRide = async (req, res) => {
       zipCode: destinationLocation[0].zipCode
     };
 
-    // Create the ride with locations in a transaction
     const newRide = await prisma.$transaction(async (tx) => {
-      // Create pickup location
       const pickup = await tx.location.create({ data: pickupData });
       
-      // Create destination location
       const destination = await tx.location.create({ data: destinationData });
       
-      // Create ride with the locations
       const ride = await tx.ride.create({
         data: {
           ...rideData,
@@ -120,7 +112,6 @@ exports.publishRide = async (req, res) => {
         }
       });
       
-      // Create waypoints if provided
       if (waypoints && waypoints.length > 0) {
         for (let i = 0; i < waypoints.length; i++) {
           const waypointData = {
@@ -128,7 +119,7 @@ exports.publishRide = async (req, res) => {
             latitude: waypoints[i].latitude,
             longitude: waypoints[i].longitude,
             placeName: waypoints[i].placeName,
-            stopOrder: i + 1, // Start from 1
+            stopOrder: i + 1,
             estimatedArrival: waypoints[i].estimatedArrival ? new Date(waypoints[i].estimatedArrival) : null
           };
           
@@ -139,44 +130,35 @@ exports.publishRide = async (req, res) => {
       return ride;
     });
 
+    await invalidateCache(generateCacheKey('user', driverId, 'published-rides'));
+    
     res.status(201).json({ 
       message: "Ride published successfully",
       rideId: newRide.id
     });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: err.message });
   }
 };
 
 exports.bookRide = async (req, res) => {
   try {
-    console.log("Starting bookRide with request:", { params: req.params, body: req.body });
-
     const rideId = req.params.rideId || req.body.rideId; 
-    const userId = req.body.userId || req.body.passengerId;  
+    const passengerId = req.user.id;  
     const { passengerCount = 1, specialRequests } = req.body;  
 
-    console.log("Extracted request data:", { rideId, userId, passengerCount, specialRequests });
-
-    // Input validation
-    if (!rideId || !userId) {
-      console.log("Missing required fields:", { rideId, userId });
-      return res.status(400).json({ message: "Ride ID and User ID are required" });
+    if (!rideId) {
+      return res.status(400).json({ message: "Ride ID is required" });
     }
 
-    // Find the user by uid
     const passenger = await prisma.user.findUnique({
-      where: { uid: userId }
+      where: { uid: passengerId }
     });
-    console.log("Found passenger:", passenger);
 
     if (!passenger) {
-      console.log("Passenger not found for userId:", userId);
       return res.status(404).json({ message: "Passenger not found" });
     }
 
-    // Find the ride by its ID
     const ride = await prisma.ride.findUnique({
       where: { id: rideId },
       include: {
@@ -185,58 +167,40 @@ exports.bookRide = async (req, res) => {
         destination: true
       }
     });
-    console.log("Found ride:", ride);
 
     if (!ride) {
-      console.log("Ride not found for rideId:", rideId);
       return res.status(404).json({ message: "Ride not found" });
     }
 
-    // Check if the ride is already booked by this passenger
     const existingBooking = await prisma.booking.findFirst({
       where: {
         rideId: ride.id,
         passengerId: passenger.id
       }
     });
-    console.log("Existing booking check:", existingBooking);
 
     if (existingBooking) {
-      console.log("Ride already booked by passenger:", { rideId, passengerId: passenger.id });
       return res.status(400).json({ message: "Ride is already booked by the passenger" });
     }
 
-    // Check if there are available seats
     if (ride.bookings.length >= ride.selectedCapacity) {
-      console.log("No available seats:", { bookings: ride.bookings.length, capacity: ride.selectedCapacity });
       return res.status(400).json({ message: "No available seats for this ride" });
     }
 
-    // Check if passenger count is valid
     const totalBookedSeats = ride.bookings.reduce((sum, booking) => sum + (booking.passengerCount || 1), 0);
     const remainingSeats = ride.selectedCapacity - totalBookedSeats;
-    console.log("Seat availability check:", { totalBookedSeats, remainingSeats, requestedSeats: passengerCount });
     
     if (passengerCount > remainingSeats) {
-      console.log("Not enough seats available:", { requested: passengerCount, remaining: remainingSeats });
       return res.status(400).json({ 
         message: `Not enough seats. Only ${remainingSeats} seats available` 
       });
     }
 
-    // Check if ride date is in the past
-    // if (new Date(ride.selectedDate) < new Date()) {
-    //   console.log("Ride date is in the past:", { selectedDate: ride.selectedDate });
-    //   return res.status(400).json({ message: "Cannot book a ride in the past" });
-    // }
-
-    // Calculate payment amount (either fixed price or based on distance)
     let paymentAmount = ride.price;
     if (ride.pricePerKm && ride.estimatedDistance) {
       paymentAmount = ride.pricePerKm * ride.estimatedDistance;
     }
 
-    // Create a new booking
     const booking = await prisma.booking.create({
       data: {
         passengerId: passenger.id,
@@ -252,11 +216,8 @@ exports.bookRide = async (req, res) => {
         bookingDate: new Date()
       }
     });
-    console.log("Created new booking:", booking);
 
-    // Update the ride status if this is the first booking
     if (ride.rideType === "published") {
-      console.log("Updating ride status for first booking");
       await prisma.ride.update({
         where: { id: ride.id },
         data: {
@@ -266,54 +227,39 @@ exports.bookRide = async (req, res) => {
       });
     }
 
-    console.log("Booking completed successfully:", { bookingId: booking.id });
-
-    // After successful booking, invalidate relevant caches
-    await invalidateCache(generateCacheKey('user', userId, 'booked-rides'));
-    await invalidateCache(generateCacheKey('user', ride.driver.uid, 'published-rides'));
+    await invalidateCache(generateCacheKey('user', passengerId, 'booked-rides'));
+    await invalidateCache(generateCacheKey('user', ride.driverId, 'published-rides'));
 
     res.json({ 
       message: "Ride booked successfully",
       bookingId: booking.id
     });
   } catch (err) {
-    console.error("Error in bookRide:", err);
-    res.status(500).json({ message: "Internal server error", error: err.message });
+    res.status(500).json({ error: err.message });
   }
 };
 
 exports.fetchPublishedRides = async (req, res) => {
   try {
-    const userId = req.params.userId || req.query.userId;
-    console.log("Fetching published rides for userId:", userId);
+    const userId = req.user.id;
 
     if (!userId) {
-      console.log("No userId provided in request parameters");
       return res.status(400).json({ message: "User ID is required as a route parameter or query parameter" });
     }
 
-    // Try to get from cache first
     const cacheKey = generateCacheKey('user', userId, 'published-rides');
     const cachedRides = await getCachedData(cacheKey);
     
     if (cachedRides) {
-      console.log("Returning published rides from cache");
       return res.json(cachedRides);
     }
-
-    // Find the user by uid
     const user = await prisma.findUserByUid(userId);
 
-    console.log("Found user:", user);
-
     if (!user) {
-      console.log("User not found for userId:", userId);
       return res.status(404).json({ message: "User not found" });
     }
-
-    // Find rides by driver id using the utility function
     const publishedRides = await prisma.ride.findMany({
-      where: { 
+      where: {
         driverId: user.id 
       },
       include: {
@@ -335,7 +281,6 @@ exports.fetchPublishedRides = async (req, res) => {
         selectedDate: 'desc'
       }
     });
-    console.log("Found published rides count:", publishedRides.length);
 
     const ridesData = publishedRides.map(ride => {
       const passengerInfo = ride.bookings.map(booking => {
@@ -387,48 +332,39 @@ exports.fetchPublishedRides = async (req, res) => {
       };
     });
 
-    // Cache the rides data
     await cacheData(cacheKey, ridesData, CACHE_DURATIONS.PUBLISHED_RIDES);
 
-    console.log("Sending back ridesData with length:", ridesData.length);
     res.json(ridesData);
   } catch (err) {
-    console.error("Error fetching published rides:", err);
     res.status(502).json({ error: err.message });
   }
 };
 
+
 exports.fetchBookedRides = async (req, res) => {
   try {
-    const userId = req.params.userId || req.query.userId;
-    console.log("Fetching booked rides for userId:", userId);
+    const userId = req.user.id;
 
     if (!userId) {
-      console.log("No userId provided in request parameters");
       return res.status(400).json({ message: "User ID is required as a route parameter or query parameter" });
     }
 
-    // Try to get from cache first
     const cacheKey = generateCacheKey('user', userId, 'booked-rides');
     const cachedRides = await getCachedData(cacheKey);
+    console.log("Cached rides:", cachedRides);
     
     if (cachedRides) {
-      console.log("Returning booked rides from cache");
       return res.json(cachedRides);
     }
 
-    // Find the user by uid
     const user = await prisma.findUserByUid(userId);
-    console.log("Found user:", user);
 
     if (!user) {
-      console.log("User not found for userId:", userId);
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Find bookings for this passenger
     const bookings = await prisma.booking.findMany({
-      where: { 
+      where: {
         passengerId: user.id 
       },
       include: {
@@ -451,7 +387,6 @@ exports.fetchBookedRides = async (req, res) => {
         createdAt: 'desc'
       }
     });
-    console.log("Found bookings count:", bookings.length);
 
     const ridesData = bookings.map(booking => {
       const ride = booking.ride;
@@ -507,37 +442,28 @@ exports.fetchBookedRides = async (req, res) => {
         rating: booking.rating
       };
     });
-
-    // Cache the rides data
+   
     await cacheData(cacheKey, ridesData, CACHE_DURATIONS.BOOKED_RIDES);
-
-    console.log("Sending back ridesData with length:", ridesData.length);
+    console.log("Rides data:", ridesData);
     res.json(ridesData);
   } catch (err) {
-    console.error("Error fetching booked rides:", err);
     res.status(502).json({ error: err.message });
   }
 };
 
 exports.fetchAvailableRides = async (req, res) => {
-  console.log("Fetching available rides");
   try {
-    const { 
-      userId, 
-      maxPrice, 
-      pickupLocation, 
+    const userId = req.user.id;
+    const {
+      maxPrice,
+      pickupLocation,
       destinationLocation,
       pickupLat,
       pickupLng,
       destinationLat,
-      destinationLng 
+      destinationLng
     } = req.query;
-    
-    console.log("Request query:", req.query);
-    console.log("User ID:", userId);
-    console.log("Max Price:", maxPrice);
-    
-    // Find the user if userId is provided
+
     let user = null;
     if (userId) {
       user = await prisma.findUserByUid(userId);
@@ -545,17 +471,15 @@ exports.fetchAvailableRides = async (req, res) => {
         return res.status(404).json(buildErrorResponse("User not found"));
       }
     }
-    console.log("User found:", user);
-    
+
     const whereClause = {
-      rideStatus: { not: "Completed" },
-      //selectedDate: { gte: new Date() }
+      rideStatus: { not: "Completed" }
     };
 
     if (user) {
       whereClause.NOT = { driverId: user.id };
     }
-    
+
     if (maxPrice) {
       whereClause.price = { lte: parseFloat(maxPrice) };
     }
@@ -593,10 +517,8 @@ exports.fetchAvailableRides = async (req, res) => {
         longitude: parseFloat(pickupLng),
         placeName: pickupLocation || "User pickup"
       };
-      console.log("Using pickup coordinates:", userPickup);
     } else if (pickupLocation) {
       userPickup = parseLocationData(pickupLocation);
-      console.log("Using pickup location name:", userPickup);
     }
 
     if (destinationLat && destinationLng) {
@@ -605,43 +527,36 @@ exports.fetchAvailableRides = async (req, res) => {
         longitude: parseFloat(destinationLng),
         placeName: destinationLocation || "User destination"
       };
-      console.log("Using destination coordinates:", userDestination);
     } else if (destinationLocation) {
       userDestination = parseLocationData(destinationLocation);
-      console.log("Using destination location name:", userDestination);
     }
 
-    // Use hydrators to format the response
     const ridesData = availableRides
       .map(ride => {
-        const totalBookedSeats = ride.bookings.reduce((sum, booking) => sum + (booking.passengerCount || 1), 0);
-        
+        const totalBookedSeats = ride.bookings.reduce(
+          (sum, booking) => sum + (booking.passengerCount || 1),
+          0
+        );
         const remainingCapacity = ride.selectedCapacity - totalBookedSeats;
-        
         if (remainingCapacity <= 0) {
           return null;
         }
-        
         if (!isRideRouteMatch(ride, userPickup, userDestination)) {
           return null;
         }
-
         const hydratedRide = hydrateRide(ride, {
           includeDriver: true,
           includeVehicle: true,
           includeLocations: true,
           includeBookings: false
         });
-        
         hydratedRide.remainingCapacity = remainingCapacity;
-        
         return hydratedRide;
       })
-      .filter(Boolean); 
+      .filter(Boolean);
 
     res.json(buildSuccessResponse(ridesData));
   } catch (err) {
-    console.error(err);
     res.status(502).json(buildErrorResponse("Error fetching available rides", err));
   }
 };
@@ -649,29 +564,38 @@ exports.fetchAvailableRides = async (req, res) => {
 //Complete Ride
 exports.completeRide = async (req, res) => {
   try {
+    const userUid = req.user.id;
     const rideId = req.params.rideId;
-    const { userId } = req.body;  
 
-    if (userId) {
-      const user = await prisma.user.findUnique({ where: { uid: userId } });
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
+    const user = await prisma.user.findUnique({
+      where: { uid: userUid }
+    });
+
+    if (!user) {
+      return res.status(404).json(buildErrorResponse("User not found"));
+    }
+    const ride = await prisma.ride.findFirst({
+      where: { 
+        id: rideId,
+        driverId: user.id
+      },
+      include: {
+        bookings: true
       }
-      
-      const ride = await prisma.ride.findUnique({
-        where: { id: rideId },
-        include: { bookings: true }
-      });
-      
-      if (!ride) {
-        return res.status(404).json({ message: "Ride not found" });
-      }
-      
-      if (ride.driverId !== user.id) {
-        return res.status(403).json({ message: "Only the driver can complete this ride" });
-      }
-      
-      await prisma.ride.update({
+    });
+
+    if (!ride) {
+      return res.status(404).json(
+        buildErrorResponse("Ride not found or you're not authorized to complete it")
+      );
+    }
+
+    if (ride.rideStatus === "Completed") {
+      return res.status(400).json(buildErrorResponse("Ride is already completed"));
+    }
+
+    const updatedRide = await prisma.$transaction(async (tx) => {
+      const ride = await tx.ride.update({
         where: { id: rideId },
         data: { 
           rideStatus: "Completed",
@@ -679,48 +603,43 @@ exports.completeRide = async (req, res) => {
         }
       });
 
-      for (const booking of ride.bookings) {
-        await prisma.booking.update({
-          where: { id: booking.id },
-          data: { 
-            status: "completed",
-            paymentStatus: "COMPLETED",
-            updatedAt: new Date()
+      await tx.booking.updateMany({
+        where: { 
+          rideId: rideId,
+          status: {
+            not: "cancelled"
           }
-        });
-
-        // Invalidate passenger's ride stats cache
-        const passengerId = booking.passengerId;
-        const passengerUser = await prisma.user.findUnique({ 
-          where: { id: passengerId },
-          select: { uid: true }
-        });
-        if (passengerUser) {
-          await invalidateCache(generateCacheKey('user', passengerUser.uid, 'ride-stats'));
+        },
+        data: { 
+          status: "completed",
+          updatedAt: new Date()
         }
-      }
+      });
 
-      // Invalidate driver's ride stats cache
-      await invalidateCache(generateCacheKey('user', userId, 'ride-stats'));
+      return ride;
+    });
 
-      res.json({ message: "Ride completed successfully" });
-    } else {
-      return res.status(400).json({ message: "User ID is required" });
+    await invalidateCache(generateCacheKey('user', userUid, 'published-rides'));
+    for (const booking of ride.bookings) {
+      await invalidateCache(generateCacheKey('user', booking.passengerId, 'booked-rides'));
     }
+
+    const hydratedRide = hydrateRide(updatedRide);
+    res.json(buildSuccessResponse({ 
+      message: "Ride completed successfully",
+      ride: hydratedRide 
+    }));
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Error completing the ride", error: err.message });
+    res.status(500).json(buildErrorResponse("Error completing ride", err));
   }
 };
 
 exports.cancelRide = async (req, res) => {
-  console.log("Cancelling ride");
   try {
     const rideId = req.params.rideId;
-    const { userId, role } = req.body; 
-    console.log("Ride ID:", rideId);
-    console.log("User ID:", userId);
-    console.log("Role:", role);
+    const userId = req.user.id;
+    const { role } = req.body; 
+
     if (!rideId || !userId) {
       return res.status(400).json({ message: "Ride ID and User ID are required" });
     }
@@ -754,7 +673,6 @@ exports.cancelRide = async (req, res) => {
     const isDriver = ride.driverId === user.id;
     const isPassenger = ride.bookings.some(booking => booking.passengerId === user.id);
     
-    // If role is specified, verify it matches reality
     if (role === 'driver' && !isDriver) {
       return res.status(403).json({ message: "You are not the driver of this ride" });
     }
@@ -764,7 +682,6 @@ exports.cancelRide = async (req, res) => {
     }
     
     if (isDriver) {
-      // If driver cancels, cancel all bookings and the ride
       for (const booking of ride.bookings) {
         await prisma.booking.update({
           where: { id: booking.id },
@@ -784,9 +701,7 @@ exports.cancelRide = async (req, res) => {
         }
       });
       
-      // After successful cancellation, invalidate relevant caches
       await invalidateCache(generateCacheKey('user', userId, 'published-rides'));
-      // Invalidate cache for all passengers of this ride
       for (const booking of ride.bookings) {
         const passenger = await prisma.user.findUnique({
           where: { id: booking.passengerId },
@@ -803,7 +718,6 @@ exports.cancelRide = async (req, res) => {
         cancelledBy: "driver"
       });
     } else if (isPassenger) {
-      // If passenger cancels, only cancel their booking
       const booking = await prisma.booking.findFirst({
         where: {
           rideId: rideId,
@@ -820,7 +734,6 @@ exports.cancelRide = async (req, res) => {
         }
       });
 
-      // Update ride type back to "published" if it was the only booking
       const remainingBookings = await prisma.booking.findMany({
         where: {
           rideId: rideId,
@@ -830,7 +743,7 @@ exports.cancelRide = async (req, res) => {
 
       if (remainingBookings.length === 0) {
         await prisma.ride.update({
-          where: { id: rideId },
+      where: { id: rideId },
           data: {
             rideType: "published", 
             rideStatus: "Upcoming", 
@@ -839,7 +752,6 @@ exports.cancelRide = async (req, res) => {
         });
       }
       
-      // After successful cancellation, invalidate relevant caches
       await invalidateCache(generateCacheKey('user', userId, 'booked-rides'));
       await invalidateCache(generateCacheKey('user', ride.driver.uid, 'published-rides'));
 
@@ -854,7 +766,6 @@ exports.cancelRide = async (req, res) => {
       });
     }
   } catch (err) {
-    console.error(err);
     res.status(500).json({ 
       success: false,
       message: "Error cancelling ride", 
@@ -863,106 +774,13 @@ exports.cancelRide = async (req, res) => {
   }
 };
 
-exports.sendMessage = async (req, res) => {
-  try {
-    const { senderUid, receiverUid, content } = req.body;
-    
-    if (!senderUid || !receiverUid || !content) {
-      return res.status(400).json({ error: "Sender, receiver, and message content are required" });
-    }
-    
-    // Find users
-    const sender = await prisma.user.findUnique({ where: { uid: senderUid } });
-    const receiver = await prisma.user.findUnique({ where: { uid: receiverUid } });
-    
-    if (!sender || !receiver) {
-      return res.status(404).json({ error: "One or both users not found" });
-    }
-    
-    // Create the message
-    const message = await prisma.message.create({
-      data: {
-        content,
-        senderId: sender.id,
-        receiverId: receiver.id
-      }
-    });
-    
-    res.status(201).json({ message: "Message sent successfully", messageId: message.id });
-  } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({ error: "An error occurred" });
-  }
-};
-
-exports.getMessages = async (req, res) => {
-  try {
-    const { userId, otherUserId } = req.params; 
-    
-    const user = await prisma.user.findUnique({ where: { uid: userId } });
-    const otherUser = await prisma.user.findUnique({ where: { uid: otherUserId } });
-    
-    if (!user || !otherUser) {
-      return res.status(404).json({ error: "One or both users not found" });
-    }
-    
-    // Get messages between the two users
-    const messages = await prisma.message.findMany({
-      where: {
-        OR: [
-          { senderId: user.id, receiverId: otherUser.id },
-          { senderId: otherUser.id, receiverId: user.id }
-        ]
-      },
-      orderBy: {
-        createdAt: 'asc'
-      },
-      include: {
-        sender: {
-          select: {
-            uid: true,
-            name: true,
-            photoUrl: true
-          }
-        },
-        receiver: {
-          select: {
-            uid: true,
-            name: true,
-            photoUrl: true
-          }
-        }
-      }
-    });
-    
-    await prisma.message.updateMany({
-      where: {
-        senderId: otherUser.id,
-        receiverId: user.id,
-        isRead: false
-      },
-      data: {
-        isRead: true
-      }
-    });
-    
-    res.json({ messages });
-  } catch (error) {
-    console.error("Error:", error);
-    res.status(500).json({ error: "An error occurred" });
-  }
-};
-
-
 exports.getRideStats = async (req, res) => {
   try {
-    const userId = req.params.userId;
+    const userId = req.user.id;
     
     if (!userId) {
       return res.status(400).json(buildErrorResponse("User ID is required as a route parameter"));
     }
-
-    // Try to get stats from cache first
     const cacheKey = generateCacheKey('user', userId, 'ride-stats');
     const cachedStats = await getCachedData(cacheKey);
     
@@ -1097,7 +915,6 @@ exports.getRideStats = async (req, res) => {
       }
     };
 
-    // Cache the stats
     await cacheData(cacheKey, stats, CACHE_DURATIONS.RIDE_STATS);
 
     res.json(buildSuccessResponse(stats, "Ride statistics retrieved successfully"));

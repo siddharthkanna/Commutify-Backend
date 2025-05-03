@@ -231,14 +231,8 @@ exports.createUser = async (req, res) => {
 
 exports.updateUserDetails = async (req, res) => {
   try {
-    const { uid } = req.body;
+    const userId = req.user.id;
     
-    // Input validation
-    if (!uid) {
-      return res.status(400).json(buildErrorResponse("User ID is required"));
-    }
-
-    // Extract updatable fields
     const {
       name,
       mobileNumber,
@@ -247,7 +241,6 @@ exports.updateUserDetails = async (req, res) => {
       photoUrl
     } = req.body;
 
-    // Build update data object with only provided fields
     const updateData = {};
     if (name) updateData.name = name;
     if (mobileNumber) updateData.mobileNumber = mobileNumber.toString();
@@ -255,14 +248,12 @@ exports.updateUserDetails = async (req, res) => {
     if (roles) updateData.roles = roles;
     if (photoUrl) updateData.photoUrl = photoUrl;
 
-    // Only perform update if there's something to update
     if (Object.keys(updateData).length === 0) {
       return res.status(400).json(buildErrorResponse("No fields to update were provided"));
     }
 
-    // Perform the update
     const user = await prisma.user.update({
-      where: { uid },
+      where: { uid: userId },
       data: updateData,
       include: {
         preferences: true,
@@ -272,33 +263,30 @@ exports.updateUserDetails = async (req, res) => {
       }
     });
 
-    // Invalidate the user cache
-    await invalidateCache(`user:${uid}`);
+    const cacheKey = `user:${userId}:details`;
+    await invalidateCache(cacheKey);
+
+    const hydratedUser = hydrateUser(user, { includePreferences: true, includeVehicles: true });
 
     res.json(buildSuccessResponse(
-      { user: hydrateUser(user, { includePreferences: true, includeVehicles: true }) },
+      { user: hydratedUser },
       "User details updated successfully"
     ));
   } catch (err) {
-    console.error("Error updating user:", err);
     res.status(500).json(buildErrorResponse("User update failed", err));
   }
 };
 
 exports.getUserDetails = async (req, res) => {
   try {
-    const userId = req.params.userId;
-    const cacheKey = generateCacheKey('user', userId, 'details');
+    const userId = req.user.id;
+    const cacheKey = `user:${userId}:details`;
     
     const cachedUser = await getCachedData(cacheKey);
-    if (cachedUser) return res.json(buildSuccessResponse({ user: cachedUser }));
-
-    // Input validation
-    if (!userId) {
-      return res.status(400).json(buildErrorResponse("User ID is required"));
+    if (cachedUser) {
+      return res.json(buildSuccessResponse({ user: cachedUser }));
     }
 
-    // If not in cache, get from database
     const user = await prisma.user.findUnique({
       where: { uid: userId },
       include: {
@@ -330,7 +318,6 @@ exports.getUserDetails = async (req, res) => {
       return res.status(404).json(buildErrorResponse("User not found"));
     }
 
-    // Use the hydrator with all options enabled
     const userResponse = hydrateUser(user, {
       includePreferences: true,
       includeVehicles: true,
@@ -339,19 +326,19 @@ exports.getUserDetails = async (req, res) => {
       includeRatingDetails: true
     });
 
-    // Cache the hydrated user data
     await cacheData(cacheKey, userResponse, CACHE_DURATIONS.USER_DETAILS);
-
+    
     res.json(buildSuccessResponse({ user: userResponse }));
   } catch (error) {
-    console.error("Error fetching user details:", error);
     res.status(500).json(buildErrorResponse("Failed to retrieve user details", error));
   }
 };
 
 exports.getVehicles = async (req, res) => {
   try {
-    const { userId } = req.params;
+    console.log("getVehicles called");
+    console.log("req.user", req.user);
+    const userId = req.user.id;
     const cacheKey = generateCacheKey('user', userId, 'vehicles');
 
     // Try to get vehicles from cache first
@@ -382,7 +369,9 @@ exports.getVehicles = async (req, res) => {
 };
 
 exports.addVehicle = async (req, res) => {
-  const userId = req.params.userId;
+  const userId = req.user.id;
+  console.log("userId:", userId);
+  console.log("req.user:", req.user);
   const { 
     vehicleNumber, 
     vehicleName, 
@@ -396,7 +385,7 @@ exports.addVehicle = async (req, res) => {
     fuelEfficiency,
     features
   } = req.body;
-  console.log("vehicle details ", req.body);
+
   if (!vehicleNumber || !vehicleName || !vehicleType) {
     return res.status(400).json(buildErrorResponse("Vehicle number, name, and type are required"));
   }
@@ -443,8 +432,6 @@ exports.addVehicle = async (req, res) => {
     // Also invalidate the user details cache as it includes vehicles
     await invalidateCache(generateCacheKey('user', userId, 'details'));
 
-    console.log("vehicle created ", vehicle);
-
     res.status(201).json(buildSuccessResponse(
       { vehicle: hydrateVehicle(vehicle) }, 
       "Vehicle added successfully"
@@ -456,7 +443,7 @@ exports.addVehicle = async (req, res) => {
 };
 
 exports.updateVehicle = async (req, res) => {
-  const userId = req.params.userId;
+  const userId = req.user.id;
   const vehicleId = req.params.vehicleId;
   const { 
     vehicleNumber, 
@@ -548,7 +535,7 @@ exports.updateVehicle = async (req, res) => {
 };
 
 exports.deleteVehicle = async (req, res) => {
-  const userId = req.params.userId;
+  const userId = req.user.id;
   const vehicleId = req.params.vehicleId;
 
   try {
@@ -593,10 +580,10 @@ exports.deleteVehicle = async (req, res) => {
 // Get or update user preferences
 exports.getUserPreferences = async (req, res) => {
   try {
-    const userId = req.params.userId;
+    const userId = req.user.id;
     
     const user = await prisma.user.findUnique({
-      where: { uid: userId },
+      where: { id: userId },
       include: { preferences: true }
     });
     
@@ -631,7 +618,7 @@ exports.getUserPreferences = async (req, res) => {
 // Update user preferences
 exports.updateUserPreferences = async (req, res) => {
   try {
-    const userId = req.params.userId;
+    const userId = req.user.id;
     const { 
       smoking, 
       pets, 
@@ -642,7 +629,7 @@ exports.updateUserPreferences = async (req, res) => {
     } = req.body;
     
     const user = await prisma.user.findUnique({
-      where: { uid: userId },
+      where: { id: userId },
       include: { preferences: true }
     });
     
@@ -697,14 +684,15 @@ exports.updateUserPreferences = async (req, res) => {
 // Submit a rating
 exports.submitRating = async (req, res) => {
   try {
-    const { raterUid, ratedUid, bookingId, rating, comment } = req.body;
+    const raterUserId = req.user.id; // Get rater ID from JWT token
+    const { ratedUid, bookingId, rating, comment } = req.body;
     
-    if (!raterUid || !ratedUid || !rating || rating < 1 || rating > 5) {
-      return res.status(400).json(buildErrorResponse("Valid rater, rated user and rating (1-5) are required"));
+    if (!ratedUid || !rating || rating < 1 || rating > 5) {
+      return res.status(400).json(buildErrorResponse("Valid rated user and rating (1-5) are required"));
     }
     
     // Find users
-    const rater = await prisma.user.findUnique({ where: { uid: raterUid } });
+    const rater = await prisma.user.findUnique({ where: { id: raterUserId } });
     const rated = await prisma.user.findUnique({ where: { uid: ratedUid } });
     
     if (!rater || !rated) {
@@ -756,10 +744,10 @@ exports.submitRating = async (req, res) => {
 // Get user ratings
 exports.getUserRatings = async (req, res) => {
   try {
-    const userId = req.params.userId;
+    const userId = req.user.id;
     
     const user = await prisma.user.findUnique({
-      where: { uid: userId }
+      where: { id: userId }
     });
     
     if (!user) {

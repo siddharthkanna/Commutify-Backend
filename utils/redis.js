@@ -3,20 +3,16 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-// Create Redis client
 const redisClient = createClient({
-    url: process.env.REDIS_URL || 'redis://localhost:6379'
+    url: process.env.REDIS_URL
 });
 
-// Handle Redis connection events
 redisClient.on('error', (err) => console.error('Redis Client Error:', err));
 redisClient.on('connect', () => console.log('Connected to Redis'));
 
-// Connect to Redis
 redisClient.connect().catch(console.error);
 
-// Cache utility functions
-const DEFAULT_EXPIRATION = 3600; // 1 hour in seconds
+const DEFAULT_EXPIRATION = 3600;
 
 const cacheData = async (key, data, expiration = DEFAULT_EXPIRATION) => {
     try {
