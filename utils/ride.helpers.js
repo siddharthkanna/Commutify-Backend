@@ -59,9 +59,43 @@ const isRideRouteMatch = (ride, userPickup, userDestination) => {
   return isPickupValid && isDestinationValid;
 };
 
+
+const RideStatus = {
+  Upcoming: "Upcoming",
+  InProgress: "InProgress",
+  Completed: "Completed",
+  Cancelled: "Cancelled"
+};
+
+const RideType = {
+  Published: "published",
+  Booked: "booked"
+};
+
+const BookingStatus = {
+  Ongoing: "ongoing",
+  Confirmed: "confirmed",
+  Cancelled: "cancelled",
+  Completed: "completed"
+};
+
+
+
+const calculateRemainingCapacity = (ride) => {
+  const totalBookedSeats = ride.bookings
+    .filter(booking => booking.status !== BookingStatus.Cancelled)
+    .reduce((sum, booking) => sum + (booking.passengerCount || 1), 0);
+  return ride.selectedCapacity - totalBookedSeats;
+};
+
+
 module.exports = {
   isPointBetween,
   isRideRouteMatch,
   isWithinDistance,
-  isSameLocation
+  isSameLocation,
+  RideStatus,
+  RideType,
+  BookingStatus,
+  calculateRemainingCapacity
 }; 

@@ -1,8 +1,12 @@
 const prisma = require("../prisma/prisma-client");
-const { hydrateRide, hydrateUser, buildSuccessResponse, buildErrorResponse } = require("../utils/hydrators");
+const { hydrateRide, buildSuccessResponse, buildErrorResponse } = require("../utils/hydrators");
 const { cacheData, getCachedData, invalidateCache } = require("../utils/redis");
 const { 
-  isRideRouteMatch 
+  isRideRouteMatch,
+  RideStatus,
+  RideType,
+  BookingStatus,
+  calculateRemainingCapacity
 } = require("../utils/ride.helpers");
 
 const CACHE_DURATIONS = {
@@ -58,6 +62,10 @@ exports.publishRide = async (req, res) => {
       return res.status(404).json({ message: "Vehicle not found" });
     }
 
+    if (selectedCapacity > vehicle.capacity) {
+      return res.status(400).json({ message: "Selected capacity exceeds vehicle capacity" });
+    }
+
     const rideData = {
       driverId: user.id,
       vehicleId: vehicle.id,
@@ -73,7 +81,7 @@ exports.publishRide = async (req, res) => {
       isRecurring: isRecurring || false,
       recurringDays: recurringDays || [],
       notes,
-      rideType: "published"
+      rideType: RideType.Published
     };
 
     const pickupData = {
@@ -142,92 +150,89 @@ exports.publishRide = async (req, res) => {
 
 exports.bookRide = async (req, res) => {
   try {
-    const rideId = req.params.rideId || req.body.rideId; 
-    const passengerId = req.user.id;  
-    const { passengerCount = 1, specialRequests } = req.body;  
+    const { rideId = req.params.rideId, passengerCount = 1, specialRequests } = req.body;
+    const passengerId = req.user.id;
 
     if (!rideId) {
       return res.status(400).json({ message: "Ride ID is required" });
     }
 
-    const passenger = await prisma.user.findUnique({
-      where: { uid: passengerId }
-    });
+    const [passenger, ride] = await Promise.all([
+      prisma.user.findUnique({ where: { uid: passengerId } }),
+      prisma.ride.findUnique({
+        where: { id: rideId },
+        include: { bookings: true, pickup: true, destination: true }
+      })
+    ]);
 
     if (!passenger) {
       return res.status(404).json({ message: "Passenger not found" });
     }
 
-    const ride = await prisma.ride.findUnique({
-      where: { id: rideId },
-      include: {
-        bookings: true,
-        pickup: true,
-        destination: true
-      }
-    });
-
     if (!ride) {
       return res.status(404).json({ message: "Ride not found" });
     }
 
-    const existingBooking = await prisma.booking.findFirst({
-      where: {
-        rideId: ride.id,
-        passengerId: passenger.id
-      }
-    });
+    const existingBooking = ride.bookings.find(b => b.passengerId === passenger.id && b.status !== BookingStatus.Cancelled);
 
     if (existingBooking) {
       return res.status(400).json({ message: "Ride is already booked by the passenger" });
     }
 
-    if (ride.bookings.length >= ride.selectedCapacity) {
-      return res.status(400).json({ message: "No available seats for this ride" });
-    }
-
-    const totalBookedSeats = ride.bookings.reduce((sum, booking) => sum + (booking.passengerCount || 1), 0);
-    const remainingSeats = ride.selectedCapacity - totalBookedSeats;
-    
-    if (passengerCount > remainingSeats) {
+    const remainingCapacity = calculateRemainingCapacity(ride);
+    if (remainingCapacity < passengerCount) {
       return res.status(400).json({ 
-        message: `Not enough seats. Only ${remainingSeats} seats available` 
+        message: `Not enough seats. Only ${remainingCapacity} seats available` 
       });
     }
 
-    let paymentAmount = ride.price;
-    if (ride.pricePerKm && ride.estimatedDistance) {
-      paymentAmount = ride.pricePerKm * ride.estimatedDistance;
-    }
+    const paymentAmount = ride.pricePerKm && ride.estimatedDistance
+      ? ride.pricePerKm * ride.estimatedDistance
+      : ride.price;
 
-    const booking = await prisma.booking.create({
-      data: {
+    const booking = await prisma.$transaction(async (tx) => {
+      const updatedRide = await tx.ride.findUnique({
+        where: { id: rideId },
+        include: { bookings: true }
+      });
+      
+      if (!updatedRide) {
+        throw new Error('Ride not found');
+      }
+      
+      const updatedCapacity = calculateRemainingCapacity(updatedRide);
+      if (passengerCount > updatedCapacity) {
+        throw new Error(`Not enough seats. Only ${updatedCapacity} available`);
+      }
+      
+      const bookingData = {
         passengerId: passenger.id,
         driverId: ride.driverId,
         rideId: ride.id,
         source: ride.pickup.placeName,
         destination: ride.destination.placeName,
-        status: "ongoing",
+        status: BookingStatus.Ongoing,
         passengerCount,
         specialRequests,
         paymentAmount,
         paymentStatus: "PENDING",
         bookingDate: new Date()
-      }
+      };
+
+      return tx.booking.create({ data: bookingData });
     });
 
-    if (ride.rideType === "published") {
+    if (ride.rideType === RideType.Published) {
       await prisma.ride.update({
         where: { id: ride.id },
-        data: {
-          rideType: "booked",
-          rideStatus: "Upcoming"
-        }
+        data: { rideType: RideType.Booked, rideStatus: RideStatus.Upcoming }
       });
     }
 
-    await invalidateCache(generateCacheKey('user', passengerId, 'booked-rides'));
-    await invalidateCache(generateCacheKey('user', ride.driverId, 'published-rides'));
+    await Promise.all([
+      invalidateCache(generateCacheKey('user', passengerId, 'booked-rides')),
+      invalidateCache(generateCacheKey('user', ride.driverId, 'published-rides'))
+    ]);
 
     res.json({ 
       message: "Ride booked successfully",
@@ -350,7 +355,6 @@ exports.fetchBookedRides = async (req, res) => {
 
     const cacheKey = generateCacheKey('user', userId, 'booked-rides');
     const cachedRides = await getCachedData(cacheKey);
-    console.log("Cached rides:", cachedRides);
     
     if (cachedRides) {
       return res.json(cachedRides);
@@ -443,7 +447,6 @@ exports.fetchBookedRides = async (req, res) => {
     });
    
     await cacheData(cacheKey, ridesData, CACHE_DURATIONS.BOOKED_RIDES);
-    console.log("Rides data:", ridesData);
     res.json(ridesData);
   } catch (err) {
     res.status(502).json({ error: err.message });
@@ -470,7 +473,7 @@ exports.fetchAvailableRides = async (req, res) => {
     }
 
     const whereClause = {
-      rideStatus: { not: "Completed" }
+      rideStatus: { not: RideStatus.Completed }
     };
 
     if (user) {
@@ -524,10 +527,12 @@ exports.fetchAvailableRides = async (req, res) => {
 
     const ridesData = availableRides
       .map(ride => {
-        const totalBookedSeats = ride.bookings.reduce(
-          (sum, booking) => sum + (booking.passengerCount || 1),
-          0
-        );
+        const totalBookedSeats = ride.bookings
+          .filter(booking => booking.status !== BookingStatus.Cancelled)
+          .reduce(    
+            (sum, booking) => sum + (booking.passengerCount || 1),
+            0
+          );
         const remainingCapacity = ride.selectedCapacity - totalBookedSeats;
         if (remainingCapacity <= 0) {
           return null;
@@ -589,7 +594,7 @@ exports.completeRide = async (req, res) => {
       const ride = await tx.ride.update({
         where: { id: rideId },
         data: { 
-          rideStatus: "Completed",
+          rideStatus: RideStatus.Completed,
           updatedAt: new Date()
         }
       });
@@ -598,11 +603,11 @@ exports.completeRide = async (req, res) => {
         where: { 
           rideId: rideId,
           status: {
-            not: "cancelled"
+            not: BookingStatus.Cancelled
           }
         },
         data: { 
-          status: "completed",
+          status: BookingStatus.Completed,
           updatedAt: new Date()
         }
       });
@@ -655,7 +660,7 @@ exports.cancelRide = async (req, res) => {
       return res.status(404).json({ message: "Ride not found" });
     }
 
-    if (ride.rideStatus === "Completed" || ride.rideStatus === "Cancelled") {
+    if (ride.rideStatus === RideStatus.Completed || ride.rideStatus === RideStatus.Cancelled) {
       return res.status(400).json({
         message: "Cannot cancel a completed or already canceled ride"
       });
@@ -677,7 +682,7 @@ exports.cancelRide = async (req, res) => {
         await prisma.booking.update({
           where: { id: booking.id },
           data: { 
-            status: "cancelled",
+            status: BookingStatus.Cancelled,
             paymentStatus: "REFUNDED",
             updatedAt: new Date()
           }
@@ -687,7 +692,7 @@ exports.cancelRide = async (req, res) => {
       await prisma.ride.update({
         where: { id: rideId },
         data: { 
-          rideStatus: "Cancelled",
+          rideStatus: RideStatus.Cancelled,
           updatedAt: new Date()
         }
       });
@@ -719,7 +724,7 @@ exports.cancelRide = async (req, res) => {
       await prisma.booking.update({
         where: { id: booking.id },
         data: { 
-          status: "cancelled",
+          status: BookingStatus.Cancelled,
           paymentStatus: "REFUNDED",
           updatedAt: new Date()
         }
@@ -728,7 +733,7 @@ exports.cancelRide = async (req, res) => {
       const remainingBookings = await prisma.booking.findMany({
         where: {
           rideId: rideId,
-          status: { not: "cancelled" }
+          status: { not: BookingStatus.Cancelled }
         }
       });
 
@@ -736,8 +741,8 @@ exports.cancelRide = async (req, res) => {
         await prisma.ride.update({
       where: { id: rideId },
           data: {
-            rideType: "published", 
-            rideStatus: "Upcoming", 
+            rideType: RideType.Published, 
+            rideStatus: RideStatus.Upcoming, 
             updatedAt: new Date()
           }
         });
@@ -808,13 +813,13 @@ exports.getRideStats = async (req, res) => {
 
     const driverStats = {
       totalRidesPublished: publishedRides.length,
-      totalRidesCompleted: publishedRides.filter(ride => ride.rideStatus === "Completed").length,
-      totalRidesCancelled: publishedRides.filter(ride => ride.rideStatus === "Cancelled").length,
-      totalRidesUpcoming: publishedRides.filter(ride => ride.rideStatus === "Upcoming").length,
-      totalRidesInProgress: publishedRides.filter(ride => ride.rideStatus === "InProgress").length,
+      totalRidesCompleted: publishedRides.filter(ride => ride.rideStatus === RideStatus.Completed).length,
+      totalRidesCancelled: publishedRides.filter(ride => ride.rideStatus === RideStatus.Cancelled).length,
+      totalRidesUpcoming: publishedRides.filter(ride => ride.rideStatus === RideStatus.Upcoming).length,
+      totalRidesInProgress: publishedRides.filter(ride => ride.rideStatus === RideStatus.InProgress).length,
       totalPassengersServed: publishedRides.reduce((sum, ride) => sum + ride.bookings.length, 0),
       totalEarnings: publishedRides.reduce((sum, ride) => {
-        if (ride.rideStatus === "Completed") {
+        if (ride.rideStatus === RideStatus.Completed) {
           return sum + ride.bookings.reduce((bookingSum, booking) => 
             booking.paymentStatus === "COMPLETED" ? bookingSum + (booking.paymentAmount || 0) : bookingSum, 
           0);
@@ -825,9 +830,9 @@ exports.getRideStats = async (req, res) => {
 
     const passengerStats = {
       totalRidesBooked: bookedRides.length,
-      totalRidesCompleted: bookedRides.filter(booking => booking.status === "completed").length,
-      totalRidesCancelled: bookedRides.filter(booking => booking.status === "cancelled").length,
-      totalRidesUpcoming: bookedRides.filter(booking => booking.status === "ongoing" || booking.status === "confirmed").length,
+      totalRidesCompleted: bookedRides.filter(booking => booking.status === BookingStatus.Completed).length,
+      totalRidesCancelled: bookedRides.filter(booking => booking.status === BookingStatus.Cancelled).length,
+      totalRidesUpcoming: bookedRides.filter(booking => booking.status === BookingStatus.Ongoing || booking.status === BookingStatus.Confirmed).length,
       totalSpent: bookedRides.reduce((sum, booking) => 
         booking.paymentStatus === "COMPLETED" ? sum + (booking.paymentAmount || 0) : sum, 
       0)
